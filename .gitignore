@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.mypy_cache/
+artifacts/*.joblib
+data/.cache/
+
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.egg-info/
+dist/
+build/

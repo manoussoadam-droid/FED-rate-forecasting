@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup
 
 SPEECHES_JSON = "https://www.federalreserve.gov/json/ne-speeches.json"
 FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+SPEECHES_TESTIMONY_URL = "https://www.federalreserve.gov/newsevents/speeches-testimony.htm"
 BASE = "https://www.federalreserve.gov"
 
 DEFAULT_UA = (
@@ -82,6 +83,23 @@ class FedHttpSession:
             p.write_text(text, encoding="utf-8")
         return text
 
+    def get_bytes(self, url: str) -> bytes:
+        path = urlparse(url).path
+        suffix = Path(path).suffix or ".bin"
+        key = re.sub(r"[^\w.-]+", "_", path)[:200]
+        if self.cache_dir:
+            p = self.cache_dir / f"{key}{suffix}"
+            if p.exists():
+                return p.read_bytes()
+        time.sleep(self.delay_s)
+        r = self.s.get(url, timeout=90)
+        r.raise_for_status()
+        data = r.content
+        if self.cache_dir:
+            p = self.cache_dir / f"{key}{suffix}"
+            p.write_bytes(data)
+        return data
+
 
 def fetch_speeches_metadata(session: FedHttpSession) -> list[dict[str, Any]]:
     raw = session.get_text(SPEECHES_JSON)
@@ -142,6 +160,38 @@ def scrape_minutes_meeting_dates(session: FedHttpSession) -> set[str]:
 
 def meeting_statement_url(ymd: str) -> str:
     return f"{BASE}/newsevents/pressreleases/monetary{ymd}a.htm"
+
+
+def meeting_statement_urls(ymd: str) -> list[str]:
+    """Primary FOMC statement URLs to try (some dates use implementation note / alternate letter)."""
+    return [
+        f"{BASE}/newsevents/pressreleases/monetary{ymd}a.htm",
+        f"{BASE}/newsevents/pressreleases/monetary{ymd}b.htm",
+    ]
+
+
+def meeting_minutes_urls(ymd: str) -> list[str]:
+    return [
+        f"{BASE}/monetarypolicy/fomcminutes{ymd}.htm",
+        f"{BASE}/monetarypolicy/files/fomcminutes{ymd}.pdf",
+        f"https://fraser.stlouisfed.org/files/text/historical/FOMC/meetingdocuments/fomcminutes{ymd}.txt",
+    ]
+
+
+def meeting_press_conference_urls(ymd: str) -> list[str]:
+    return [
+        f"{BASE}/mediacenter/files/FOMCpresconf{ymd}.pdf",
+        f"{BASE}/mediacenter/files/FOMCpresconf{ymd}.pdf?stream=top",
+        f"https://fraser.stlouisfed.org/files/text/historical/FOMC/meetingdocuments/FOMCpresconf{ymd}_final.txt",
+    ]
+
+
+def board_year_listing_url(kind: str, year: int) -> str:
+    if kind == "speech":
+        return f"{BASE}/newsevents/speech/{year}-speeches.htm"
+    if kind == "testimony":
+        return f"{BASE}/newsevents/testimony/{year}-testimony.htm"
+    raise ValueError(f"unsupported Board event kind: {kind}")
 
 
 def fetch_meeting_policy(session: FedHttpSession, ymd: str) -> dict[str, Any]:

@@ -2,7 +2,7 @@
 
 Not all Fed content is available via a convenient API. This folder holds a **minimal BeautifulSoup example** for learning; it does **not** crawl the Fed by default.
 
-For an optional, documented pull from **federalreserve.gov** (speeches JSON + statement HTML), see `fed_official.py` and `scripts/extend_speaker_federalreserve.py`.
+For the documented dataset refresh flow that pulls from **federalreserve.gov** (statements, minutes, press-conference transcripts, speeches, and testimony) plus controlled supplements, see `fed_official.py` and `scripts/rebuild_database.py`.
 
 Before scraping any site:
 

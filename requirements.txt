@@ -18,3 +18,5 @@ nltk>=3.8.0
 pytest>=7.4.0
 xgboost>=2.0.0
 mcp>=1.0.0
+Fedtools>=0.0.7
+pypdf>=6.0.0

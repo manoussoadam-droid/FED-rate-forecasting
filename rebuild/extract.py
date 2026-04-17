@@ -1,16 +1,36 @@
-"""BeautifulSoup extraction + regex cleanup for Fed HTML bodies."""
+"""BeautifulSoup extraction + regex cleanup for Fed HTML bodies.
+
+PDF extraction delegates to :mod:`scraping.document_parser` which prefers
+PyMuPDF (``fitz``) and falls back to ``pypdf`` only when PyMuPDF is not
+available at runtime. This keeps post-2020 PDF fidelity high without
+requiring callers to change APIs.
+"""
 
 from __future__ import annotations
 
 import io
 import re
+import sys
 from datetime import datetime
 
 from bs4 import BeautifulSoup
-from pypdf import PdfReader
 
 from rebuild.clean import normalize_document_text
 from scraping.fed_official import normalize_fed_text
+
+try:
+    import fitz  # type: ignore[import-untyped]
+
+    _HAS_PYMUPDF = True
+except Exception:  # pragma: no cover
+    _HAS_PYMUPDF = False
+
+try:
+    from pypdf import PdfReader
+
+    _HAS_PYPDF = True
+except Exception:  # pragma: no cover
+    _HAS_PYPDF = False
 
 
 _DATE_LINE_RE = re.compile(
@@ -66,7 +86,20 @@ def extract_minutes_body(html: str) -> str:
     return extract_speech_body(html)
 
 
-def extract_pdf_text(data: bytes) -> str:
+def _extract_pdf_text_pymupdf(data: bytes) -> str:
+    pages: list[str] = []
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        for page in doc:
+            try:
+                pages.append(page.get_text("text") or "")
+            except Exception:  # pragma: no cover
+                continue
+    return "\n".join(pages)
+
+
+def _extract_pdf_text_pypdf(data: bytes) -> str:
+    if not _HAS_PYPDF:
+        return ""
     try:
         reader = PdfReader(io.BytesIO(data))
     except Exception:
@@ -77,7 +110,32 @@ def extract_pdf_text(data: bytes) -> str:
             pages.append(page.extract_text() or "")
         except Exception:
             continue
-    return normalize_document_text("\n".join(pages))
+    return "\n".join(pages)
+
+
+def extract_pdf_text(data: bytes) -> str:
+    """Extract plain text from a PDF byte stream.
+
+    Uses PyMuPDF when available (better layout fidelity on Fed minutes /
+    press-conference PDFs) and falls back to pypdf otherwise. Returns an
+    empty string if both extractors fail; the caller should treat that as a
+    ``pdf_unreadable`` quality flag rather than inventing placeholder text.
+    """
+
+    if not data:
+        return ""
+    raw = ""
+    if _HAS_PYMUPDF:
+        try:
+            raw = _extract_pdf_text_pymupdf(data)
+        except Exception as exc:  # pragma: no cover
+            print(f"WARN: PyMuPDF extract failed, falling back to pypdf: {exc}", file=sys.stderr)
+            raw = ""
+    if not raw:
+        raw = _extract_pdf_text_pypdf(data)
+    # Dehyphenate line-wrapped words before whitespace collapse.
+    raw = re.sub(r"(\w)-\n(\w)", r"\1\2", raw)
+    return normalize_document_text(raw)
 
 
 def parse_board_event_page(html: str) -> dict[str, str]:

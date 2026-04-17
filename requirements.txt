@@ -20,3 +20,5 @@ xgboost>=2.0.0
 mcp>=1.0.0
 Fedtools>=0.0.7
 pypdf>=6.0.0
+pymupdf>=1.24
+pyarrow>=15

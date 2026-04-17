@@ -27,6 +27,13 @@ DATA_DIR = _resolve_data_dir()
 FOMC_PICKLE = DATA_DIR / "fomc_doc.pkl"
 SPEAKER_PICKLE = DATA_DIR / "speaker_doc.pkl"
 
+# Canonical columnar store (Parquet, partitioned by year) and audit DB.
+PARQUET_DIR = DATA_DIR / "parquet"
+FOMC_PARQUET_DIR = PARQUET_DIR / "fomc"
+SPEAKER_PARQUET_DIR = PARQUET_DIR / "speaker"
+AUDIT_DB = DATA_DIR / "audit.sqlite"
+ERRORS_CSV = DATA_DIR / "errors.csv"
+
 ARTIFACTS_DIR = ROOT / "artifacts"
 VECTORIZER_PATH = ARTIFACTS_DIR / "vectorizer.joblib"
 MODEL_PATH = ARTIFACTS_DIR / "model.joblib"

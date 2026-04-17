@@ -9,9 +9,9 @@ import json
 import re
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
 import requests
@@ -58,46 +58,102 @@ def fmt_rate(x: float) -> str:
 
 
 class FedHttpSession:
-    def __init__(self, cache_dir: Path | None, delay_s: float) -> None:
+    """Tiny requests wrapper with an on-disk cache and refresh controls.
+
+    The cache is intentionally simple (one file per URL path). A sidecar
+    ``{key}.meta.json`` records when the file was fetched and the parser
+    version that produced the last ingested row, which is used by the
+    ``--force-refresh-stubs`` workflow to invalidate entries whose audited
+    quality flags are still ``no_text`` / ``pdf_unreadable`` / similar.
+
+    Parameters
+    ----------
+    force_refresh:
+        If ``True``, every call bypasses the on-disk cache and refetches.
+    refresh_if:
+        Optional predicate ``(url) -> bool``. When it returns ``True`` the
+        cached file is ignored for that URL (the network result overwrites
+        the cache). This is how the rebuild script schedules targeted
+        re-fetches of previously stubbed rows.
+    """
+
+    def __init__(
+        self,
+        cache_dir: Path | None,
+        delay_s: float,
+        *,
+        force_refresh: bool = False,
+        refresh_if: Callable[[str], bool] | None = None,
+        refresh_urls: Iterable[str] | None = None,
+    ) -> None:
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": DEFAULT_UA})
         self.cache_dir = cache_dir
         self.delay_s = delay_s
+        self.force_refresh = force_refresh
+        self.refresh_if = refresh_if
+        self._refresh_urls: set[str] = set(refresh_urls or [])
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _should_refresh(self, url: str) -> bool:
+        if self.force_refresh:
+            return True
+        if url in self._refresh_urls:
+            return True
+        if self.refresh_if is not None:
+            try:
+                return bool(self.refresh_if(url))
+            except Exception:
+                return False
+        return False
+
+    def _write_sidecar(self, key: str, url: str) -> None:
+        if not self.cache_dir:
+            return
+        meta_path = self.cache_dir / f"{key}.meta.json"
+        try:
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "url": url,
+                        "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
     def get_text(self, url: str) -> str:
         key = re.sub(r"[^\w.-]+", "_", urlparse(url).path)[:200]
-        if self.cache_dir:
-            p = self.cache_dir / f"{key}.html"
-            if p.exists():
-                return p.read_text(encoding="utf-8", errors="replace")
+        p = self.cache_dir / f"{key}.html" if self.cache_dir else None
+        if p is not None and p.exists() and not self._should_refresh(url):
+            return p.read_text(encoding="utf-8", errors="replace")
         time.sleep(self.delay_s)
         r = self.s.get(url, timeout=90)
         r.raise_for_status()
-        # federalreserve.gov pages are UTF-8; apparent_encoding can mis-decode narrow hyphens.
         r.encoding = "utf-8"
         text = r.text
-        if self.cache_dir:
-            p = self.cache_dir / f"{key}.html"
+        if p is not None:
             p.write_text(text, encoding="utf-8")
+            self._write_sidecar(key, url)
         return text
 
     def get_bytes(self, url: str) -> bytes:
         path = urlparse(url).path
         suffix = Path(path).suffix or ".bin"
         key = re.sub(r"[^\w.-]+", "_", path)[:200]
-        if self.cache_dir:
-            p = self.cache_dir / f"{key}{suffix}"
-            if p.exists():
-                return p.read_bytes()
+        p = self.cache_dir / f"{key}{suffix}" if self.cache_dir else None
+        if p is not None and p.exists() and not self._should_refresh(url):
+            return p.read_bytes()
         time.sleep(self.delay_s)
         r = self.s.get(url, timeout=90)
         r.raise_for_status()
         data = r.content
-        if self.cache_dir:
-            p = self.cache_dir / f"{key}{suffix}"
+        if p is not None:
             p.write_bytes(data)
+            self._write_sidecar(key, url)
         return data
 
 

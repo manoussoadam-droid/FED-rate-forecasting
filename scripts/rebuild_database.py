@@ -23,8 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.config import DATA_DIR, FOMC_PICKLE, SPEAKER_PICKLE  # noqa: E402
+from core.config import DATA_DIR, ERRORS_CSV, FOMC_PICKLE, SPEAKER_PICKLE  # noqa: E402
 from core.ingest import FOMC_COLUMNS_LEGACY, SPEAKER_COLUMNS, load_fomc, load_speaker  # noqa: E402
+from core.repository import DocumentRepository  # noqa: E402
 from rebuild.assemble import (  # noqa: E402
     build_fomc_dataframe,
     build_speaker_dataframe,
@@ -80,12 +81,30 @@ def backup_current_pair() -> None:
         shutil.copy2(SPEAKER_PICKLE, BACKUP_SPEAKER)
 
 
+def _write_run_errors_csv(run_id: str, failures: list[str]) -> None:
+    """Append supplemental fetch failures for the current run to ``data/errors.csv``."""
+    if not failures:
+        return
+    ERRORS_CSV.parent.mkdir(parents=True, exist_ok=True)
+    header_needed = not ERRORS_CSV.exists()
+    with ERRORS_CSV.open("a", encoding="utf-8") as fh:
+        if header_needed:
+            fh.write("run_id,kind,message\n")
+        for msg in failures:
+            safe = str(msg).replace('"', "'").replace("\n", " ").replace("\r", " ")
+            fh.write(f'{run_id},supplement,"{safe}"\n')
+
+
 def download_if_needed(url: str, path: Path, *, refresh: bool) -> None:
     if path.exists() and not refresh:
         return
     r = requests.get(url, timeout=120)
     r.raise_for_status()
     path.write_bytes(r.content)
+
+
+_FOMC_EXTRAS = ("source_url", "quality_flags", "labels_from_fred", "parser_version")
+_SPEAKER_EXTRAS = ("source_url", "quality_flags", "parser_version", "alignment_rule")
 
 
 def _coerce_fomc(df: pd.DataFrame) -> pd.DataFrame:
@@ -96,7 +115,9 @@ def _coerce_fomc(df: pd.DataFrame) -> pd.DataFrame:
     for c in ("type", "decision", "high", "low", "document"):
         out[c] = out[c].astype(str)
     out["word_count"] = out["word_count"].astype("int64")
-    return out[FOMC_COLUMNS_LEGACY]
+    base = list(FOMC_COLUMNS_LEGACY)
+    extras = [c for c in _FOMC_EXTRAS if c in out.columns]
+    return out[base + extras]
 
 
 def _coerce_speaker(df: pd.DataFrame) -> pd.DataFrame:
@@ -106,7 +127,9 @@ def _coerce_speaker(df: pd.DataFrame) -> pd.DataFrame:
     for c in ("decision", "high", "low", "domain", "participant", "document"):
         out[c] = out[c].astype(str)
     out["word_count"] = out["word_count"].astype("int64")
-    return out[SPEAKER_COLUMNS]
+    base = list(SPEAKER_COLUMNS)
+    extras = [c for c in _SPEAKER_EXTRAS if c in out.columns]
+    return out[base + extras]
 
 
 def merge_public_fomc(current_fomc: pd.DataFrame, public_fomc: pd.DataFrame) -> pd.DataFrame:
@@ -257,6 +280,20 @@ def main() -> None:
     parser.add_argument("--refresh-public", action="store_true", help="Redownload public original FedNLP pickles.")
     parser.add_argument("--skip-bis-supplement", action="store_true", help="Do not add BIS Fed speech gap-fillers.")
     parser.add_argument("--skip-accessible-supplement", action="store_true", help="Do not add curated CNBC/Fox supplement.")
+    parser.add_argument(
+        "--force-refresh-stubs",
+        action="store_true",
+        help=(
+            "Re-fetch URLs whose audited quality_flags include no_text / "
+            "pdf_unreadable / html_structure_unknown, bypassing the on-disk "
+            "cache so the upgraded parser can replace legacy stubs."
+        ),
+    )
+    parser.add_argument(
+        "--force-refresh-all",
+        action="store_true",
+        help="Bypass the on-disk cache for every request this run.",
+    )
     args = parser.parse_args()
 
     backup_current_pair()
@@ -278,9 +315,23 @@ def main() -> None:
         except Exception as e:
             print(f"WARN: FRED load failed ({e}); continuing without FRED fallback.", file=sys.stderr)
 
+    refresh_urls: set[str] = set()
+    if args.force_refresh_stubs and not args.offline:
+        try:
+            pre_repo = DocumentRepository()
+            refresh_urls = {u for u, _ in pre_repo.stub_urls()}
+            print(f"--force-refresh-stubs: {len(refresh_urls)} URLs will bypass cache")
+        except Exception as e:
+            print(f"WARN: could not load stub URLs from audit DB ({e})", file=sys.stderr)
+
     session: FedHttpSession | None = None
     if not args.offline:
-        session = FedHttpSession(cache_dir=cache_dir, delay_s=args.delay)
+        session = FedHttpSession(
+            cache_dir=cache_dir,
+            delay_s=args.delay,
+            force_refresh=args.force_refresh_all,
+            refresh_urls=refresh_urls,
+        )
 
     extra_cal_html: str | None = None
     if session is not None:
@@ -356,8 +407,30 @@ def main() -> None:
     validate_frames(fomc.drop(columns=["type"], errors="ignore"), speaker)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    fomc.to_pickle(FOMC_PICKLE)
-    speaker.to_pickle(SPEAKER_PICKLE)
+
+    # Canonical write: Parquet (partitioned by year) + SQLite audit trail.
+    repo = DocumentRepository()
+    run_id = repo.start_run()
+    rows_fomc = 0
+    rows_speaker = 0
+    try:
+        rows_fomc = repo.write_fomc(fomc)
+        rows_speaker = repo.write_speaker(speaker)
+        print(f"\nWrote Parquet: fomc={rows_fomc}, speaker={rows_speaker}")
+        print(f"Audit DB: {repo.audit_db}")
+        _write_run_errors_csv(run_id, failures)
+    finally:
+        repo.finish_run(
+            run_id,
+            rows_fomc=rows_fomc,
+            rows_speaker=rows_speaker,
+            errors_csv_path=str(ERRORS_CSV) if failures else "",
+        )
+
+    # Compatibility shim: regenerate pickles from Parquet so Flask / Streamlit /
+    # training scripts continue to work unchanged.
+    pkl_fomc, pkl_speaker = repo.export_legacy_pickles()
+    print(f"Legacy pickle shim: fomc_doc.pkl={pkl_fomc}, speaker_doc.pkl={pkl_speaker}")
 
     print("\nVerifying loaders…")
     load_fomc(str(FOMC_PICKLE))

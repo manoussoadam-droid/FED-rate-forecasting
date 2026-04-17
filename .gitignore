@@ -7,6 +7,8 @@ __pycache__/
 artifacts/*.joblib
 artifacts/data_backups/
 data/.cache/
+# Optional local QA exports (regenerate from Python one-liner in README if needed)
+data/manual_review/*.csv
 
 .DS_Store
 .idea/

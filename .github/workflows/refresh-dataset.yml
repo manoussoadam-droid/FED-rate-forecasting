@@ -1,0 +1,107 @@
+name: Refresh FedNLP dataset
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC (after the previous week's FOMC content is posted).
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      force_refresh_stubs:
+        description: "Re-fetch rows whose audited quality_flags mark them as no_text / pdf_unreadable / html_structure_unknown"
+        type: boolean
+        default: false
+      min_year:
+        description: "Start year"
+        default: "2015"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fomc_tools
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: fomc_tools/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Determine year range
+        id: years
+        run: |
+          MIN_YEAR="${{ github.event.inputs.min_year || '2015' }}"
+          MAX_YEAR=$(date +%Y)
+          echo "min_year=$MIN_YEAR" >> "$GITHUB_OUTPUT"
+          echo "max_year=$MAX_YEAR" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild dataset
+        id: rebuild
+        run: |
+          FLAGS=""
+          if [ "${{ github.event.inputs.force_refresh_stubs }}" = "true" ]; then
+            FLAGS="--force-refresh-stubs"
+          fi
+          python scripts/rebuild_database.py \
+            --min-year ${{ steps.years.outputs.min_year }} \
+            --max-year ${{ steps.years.outputs.max_year }} \
+            $FLAGS \
+            2>&1 | tee rebuild.log
+
+      - name: Completeness audit
+        id: audit
+        continue-on-error: true
+        run: |
+          python scripts/audit_completeness.py \
+            --min-year 2020 \
+            --max-year ${{ steps.years.outputs.max_year }} \
+            --format md \
+            --out audit_report.md
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fednlp-refresh-${{ github.run_id }}
+          path: |
+            fomc_tools/rebuild.log
+            fomc_tools/audit_report.md
+            fomc_tools/data/errors.csv
+            fomc_tools/data/audit.sqlite
+            fomc_tools/data/parquet/**
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Open issue on completeness failure
+        if: steps.audit.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="FedNLP completeness audit failed $(date -u +%Y-%m-%d)"
+          BODY_FILE=issue_body.md
+          {
+            echo "The weekly refresh found at least one scheduled FOMC meeting with missing or stubbed documents."
+            echo ""
+            echo "See workflow artifacts (\`audit_report.md\`, \`errors.csv\`) for details."
+            echo ""
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$BODY_FILE"
+          gh issue create \
+            --title "$TITLE" \
+            --body-file "$BODY_FILE" \
+            --label data-quality

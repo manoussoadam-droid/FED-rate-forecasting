@@ -1,0 +1,33 @@
+[Unit]
+Description=FOMC Intelligence Flask API (Gunicorn)
+Documentation=https://github.com/yourorg/fomc_tools
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fomc
+WorkingDirectory=/opt/fomc_tools
+# Gunicorn is the production WSGI server — never use Flask's built-in server
+# in production. Install with: pip install gunicorn
+ExecStart=/opt/fomc_tools/.venv/bin/gunicorn \
+    --workers 2 \
+    --bind 127.0.0.1:5000 \
+    --timeout 60 \
+    --access-logfile /var/log/fomc_tools/api-access.log \
+    --error-logfile /var/log/fomc_tools/api-error.log \
+    "api.app:app"
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+EnvironmentFile=-/etc/fomc_tools/env
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fomc_tools/data /var/log/fomc_tools
+
+[Install]
+WantedBy=multi-user.target

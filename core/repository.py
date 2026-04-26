@@ -1,10 +1,7 @@
 """Data access layer for the FOMC / speaker corpora.
 
 Canonical storage is Parquet (partitioned by ``year``) plus a small SQLite
-audit database. The legacy pickles (``data/fomc_doc.pkl``,
-``data/speaker_doc.pkl``) are still produced by :meth:`export_legacy_pickles`
-as a compatibility shim so the Flask API, Streamlit UI and the ML training
-script keep working unchanged during migration.
+audit database.
 
 Schemas
 -------
@@ -63,10 +60,8 @@ import pyarrow.parquet as pq
 from core.config import (
     AUDIT_DB,
     FOMC_PARQUET_DIR,
-    FOMC_PICKLE,
     PARQUET_DIR,
     SPEAKER_PARQUET_DIR,
-    SPEAKER_PICKLE,
 )
 
 
@@ -200,10 +195,18 @@ def normalize_fomc_frame(df: pd.DataFrame) -> pd.DataFrame:
         out["text_content"] = out["document"].astype(str)
     out["text_content"] = out.get("text_content", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str)
     out["speaker"] = out.get("speaker", pd.Series([None] * len(out), index=out.index))
-    out["decision"] = out.get("decision", "").astype(str)
-    out["high"] = out.get("high", "").astype(str)
-    out["low"] = out.get("low", "").astype(str)
-    out["source_url"] = out.get("source_url", "").astype(str)
+    if "decision" not in out.columns:
+        out["decision"] = ""
+    out["decision"] = out["decision"].astype(str)
+    if "high" not in out.columns:
+        out["high"] = ""
+    out["high"] = out["high"].astype(str)
+    if "low" not in out.columns:
+        out["low"] = ""
+    out["low"] = out["low"].astype(str)
+    if "source_url" not in out.columns:
+        out["source_url"] = ""
+    out["source_url"] = out["source_url"].astype(str)
     if "ingested_at" in out.columns:
         out["ingested_at"] = pd.to_datetime(out["ingested_at"], utc=True, errors="coerce").fillna(
             pd.Timestamp(_now())
@@ -219,8 +222,12 @@ def normalize_fomc_frame(df: pd.DataFrame) -> pd.DataFrame:
         compute_quality_score(int(wc or 0), flags)
         for wc, flags in zip(out["word_count"].tolist(), out["quality_flags"].tolist(), strict=False)
     ]
-    out["parser_version"] = out.get("parser_version", "").astype(str)
-    out["labels_from_fred"] = out.get("labels_from_fred", False).astype(bool)
+    if "parser_version" not in out.columns:
+        out["parser_version"] = ""
+    out["parser_version"] = out["parser_version"].astype(str)
+    if "labels_from_fred" not in out.columns:
+        out["labels_from_fred"] = False
+    out["labels_from_fred"] = out["labels_from_fred"].astype(bool)
     cols = [f.name for f in FOMC_SCHEMA]
     for c in cols:
         if c not in out.columns:
@@ -238,16 +245,32 @@ def normalize_speaker_frame(df: pd.DataFrame) -> pd.DataFrame:
     if "document" in out.columns and "text_content" not in out.columns:
         out["text_content"] = out["document"].astype(str)
     out["text_content"] = out.get("text_content", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str)
-    out["participant"] = out.get("participant", "").astype(str)
-    out["domain"] = out.get("domain", "").astype(str)
+    if "participant" not in out.columns:
+        out["participant"] = ""
+    out["participant"] = out["participant"].astype(str)
+    if "domain" not in out.columns:
+        out["domain"] = ""
+    out["domain"] = out["domain"].astype(str)
     if "fomc_ref_date" not in out.columns and "fomc-ref-date" in out.columns:
         out["fomc_ref_date"] = out["fomc-ref-date"].astype(str)
-    out["fomc_ref_date"] = out.get("fomc_ref_date", "").astype(str)
-    out["alignment_rule"] = out.get("alignment_rule", "").astype(str)
-    out["decision"] = out.get("decision", "").astype(str)
-    out["high"] = out.get("high", "").astype(str)
-    out["low"] = out.get("low", "").astype(str)
-    out["source_url"] = out.get("source_url", "").astype(str)
+    if "fomc_ref_date" not in out.columns:
+        out["fomc_ref_date"] = ""
+    out["fomc_ref_date"] = out["fomc_ref_date"].astype(str)
+    if "alignment_rule" not in out.columns:
+        out["alignment_rule"] = ""
+    out["alignment_rule"] = out["alignment_rule"].astype(str)
+    if "decision" not in out.columns:
+        out["decision"] = ""
+    out["decision"] = out["decision"].astype(str)
+    if "high" not in out.columns:
+        out["high"] = ""
+    out["high"] = out["high"].astype(str)
+    if "low" not in out.columns:
+        out["low"] = ""
+    out["low"] = out["low"].astype(str)
+    if "source_url" not in out.columns:
+        out["source_url"] = ""
+    out["source_url"] = out["source_url"].astype(str)
     if "ingested_at" in out.columns:
         out["ingested_at"] = pd.to_datetime(out["ingested_at"], utc=True, errors="coerce").fillna(
             pd.Timestamp(_now())
@@ -263,7 +286,9 @@ def normalize_speaker_frame(df: pd.DataFrame) -> pd.DataFrame:
         compute_quality_score(int(wc or 0), flags)
         for wc, flags in zip(out["word_count"].tolist(), out["quality_flags"].tolist(), strict=False)
     ]
-    out["parser_version"] = out.get("parser_version", "").astype(str)
+    if "parser_version" not in out.columns:
+        out["parser_version"] = ""
+    out["parser_version"] = out["parser_version"].astype(str)
     cols = [f.name for f in SPEAKER_SCHEMA]
     for c in cols:
         if c not in out.columns:
@@ -339,13 +364,19 @@ class DocumentRepository:
     def _init_audit(self) -> None:
         self.audit_db.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.audit_db)) as cx:
+            cx.execute("PRAGMA journal_mode=WAL")
+            cx.execute("PRAGMA synchronous=NORMAL")
+            cx.execute("PRAGMA foreign_keys=ON")
             for stmt in _AUDIT_DDL:
                 cx.execute(stmt)
             cx.commit()
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
-        cx = sqlite3.connect(self.audit_db)
+        cx = sqlite3.connect(self.audit_db, check_same_thread=False)
+        cx.execute("PRAGMA journal_mode=WAL")
+        cx.execute("PRAGMA synchronous=NORMAL")
+        cx.execute("PRAGMA foreign_keys=ON")
         try:
             yield cx
             cx.commit()
@@ -530,7 +561,8 @@ class DocumentRepository:
         out: list[tuple[str, str]] = []
         like_clauses = " OR ".join(["quality_flags LIKE ?" for _ in flags])
         params = [f'%"{f}"%' for f in flags]
-        with closing(sqlite3.connect(self.audit_db)) as cx:
+        with closing(sqlite3.connect(self.audit_db, check_same_thread=False)) as cx:
+            cx.execute("PRAGMA journal_mode=WAL")
             cur = cx.execute(
                 f"SELECT source_url, content_hash FROM document_audit WHERE {like_clauses}",
                 params,
@@ -539,61 +571,6 @@ class DocumentRepository:
                 if url:
                     out.append((str(url), str(h)))
         return out
-
-    # -- Legacy pickle compatibility -------------------------------------
-    def export_legacy_pickles(
-        self,
-        *,
-        fomc_pickle: Path | None = None,
-        speaker_pickle: Path | None = None,
-    ) -> tuple[int, int]:
-        """Write ``fomc_doc.pkl`` / ``speaker_doc.pkl`` from the Parquet store.
-
-        Returns ``(n_fomc, n_speaker)``. Existing consumers
-        (Flask API, Streamlit UI, training script) keep reading pickle
-        unchanged until we retire them.
-        """
-        fomc_path = Path(fomc_pickle) if fomc_pickle is not None else FOMC_PICKLE
-        speaker_path = Path(speaker_pickle) if speaker_pickle is not None else SPEAKER_PICKLE
-        fomc_df = self.read_fomc()
-        speaker_df = self.read_speaker()
-        fomc_path.parent.mkdir(parents=True, exist_ok=True)
-        speaker_path.parent.mkdir(parents=True, exist_ok=True)
-        if not fomc_df.empty:
-            legacy_fomc = pd.DataFrame(
-                {
-                    "date": fomc_df["date"].astype(str),
-                    "type": fomc_df["document_type"].astype(str),
-                    "decision": fomc_df["decision"].astype(str),
-                    "high": fomc_df["high"].astype(str),
-                    "low": fomc_df["low"].astype(str),
-                    "document": fomc_df["text_content"].astype(str),
-                    "word_count": fomc_df["text_content"]
-                    .astype(str)
-                    .map(lambda t: len(t.split()))
-                    .astype("int64"),
-                }
-            )
-            legacy_fomc.to_pickle(fomc_path)
-        if not speaker_df.empty:
-            legacy_speaker = pd.DataFrame(
-                {
-                    "fomc-ref-date": speaker_df["fomc_ref_date"].astype(str),
-                    "date": speaker_df["date"].astype(str),
-                    "decision": speaker_df["decision"].astype(str),
-                    "high": speaker_df["high"].astype(str),
-                    "low": speaker_df["low"].astype(str),
-                    "domain": speaker_df["domain"].astype(str),
-                    "participant": speaker_df["participant"].astype(str),
-                    "document": speaker_df["text_content"].astype(str),
-                    "word_count": speaker_df["text_content"]
-                    .astype(str)
-                    .map(lambda t: len(t.split()))
-                    .astype("int64"),
-                }
-            )
-            legacy_speaker.to_pickle(speaker_path)
-        return int(len(fomc_df)), int(len(speaker_df))
 
 
 __all__ = [

@@ -1,0 +1,39 @@
+[Unit]
+Description=FOMC Intelligence Scheduler (APScheduler)
+Documentation=https://github.com/yourorg/fomc_tools
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# --- Adjust these three lines to match your deployment ---
+User=fomc
+WorkingDirectory=/opt/fomc_tools
+ExecStart=/opt/fomc_tools/.venv/bin/python tools/scheduler.py
+# ---------------------------------------------------------
+
+# Restart on failure; wait 10 s before each retry.
+Restart=on-failure
+RestartSec=10
+# Kill cleanly on stop; give the scheduler 30 s to finish current jobs.
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+# Load secrets from a EnvironmentFile so they're never in the unit itself.
+# Create /etc/fomc_tools/env with lines like:
+#   API_KEY=supersecret
+#   FRED_API_KEY=...
+#   NEWS_API_KEY=...
+#   ALPHA_VANTAGE_KEY=...
+#   LOG_FORMAT=json
+#   LOG_FILE=/var/log/fomc_tools/scheduler.log
+EnvironmentFile=-/etc/fomc_tools/env
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fomc_tools/data /var/log/fomc_tools
+
+[Install]
+WantedBy=multi-user.target

@@ -24,8 +24,6 @@ def _resolve_data_dir() -> Path:
 
 
 DATA_DIR = _resolve_data_dir()
-FOMC_PICKLE = DATA_DIR / "fomc_doc.pkl"
-SPEAKER_PICKLE = DATA_DIR / "speaker_doc.pkl"
 
 # Canonical columnar store (Parquet, partitioned by year) and audit DB.
 PARQUET_DIR = DATA_DIR / "parquet"
@@ -47,3 +45,22 @@ USE_XGBOOST = os.environ.get("USE_XGBOOST", "0").lower() in ("1", "true", "yes")
 # Analysis limits (avoid huge payloads)
 MAX_TEXT_CHARS_FOR_VECTOR = 100_000
 MAX_WORDCLOUD_WORDS = 200
+
+# --- External data API keys (all optional; graceful degradation if absent) ---
+FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip() or None
+NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip() or None
+ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "").strip() or None
+
+# Flask API key — if set, all /api/v1/* routes require X-API-Key: <value>.
+# Leave unset (or empty) during local development to skip enforcement.
+API_KEY = os.environ.get("API_KEY", "").strip() or None
+
+# FRED series fetched by the scheduler's daily job
+FRED_DEFAULT_SERIES = [
+    "DFEDTARL",   # Fed funds target range lower bound
+    "DFEDTARU",   # Fed funds target range upper bound
+    "FEDFUNDS",   # Effective federal funds rate
+    "T10Y2Y",     # 10-year minus 2-year Treasury spread
+    "UNRATE",     # Unemployment rate
+    "CPIAUCSL",   # CPI all urban consumers
+]

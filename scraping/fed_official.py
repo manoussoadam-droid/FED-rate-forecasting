@@ -17,6 +17,26 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    def _http_retry(fn):
+        return retry(
+            retry=retry_if_exception_type(requests.RequestException),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
+            stop=stop_after_attempt(4),
+            reraise=True,
+        )(fn)
+
+except ImportError:
+    def _http_retry(fn):  # type: ignore[misc]
+        return fn
+
 SPEECHES_JSON = "https://www.federalreserve.gov/json/ne-speeches.json"
 FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
 SPEECHES_TESTIMONY_URL = "https://www.federalreserve.gov/newsevents/speeches-testimony.htm"
@@ -79,8 +99,8 @@ class FedHttpSession:
 
     def __init__(
         self,
-        cache_dir: Path | None,
-        delay_s: float,
+        cache_dir: Path | None = None,
+        delay_s: float = 1.0,
         *,
         force_refresh: bool = False,
         refresh_if: Callable[[str], bool] | None = None,
@@ -125,16 +145,32 @@ class FedHttpSession:
         except Exception:
             pass
 
+    def get(self, url: str, **kwargs) -> requests.Response:
+        """Pass-through to the underlying requests.Session for callers that
+        need a raw Response (e.g. when checking status codes or reading JSON
+        directly without going through the on-disk cache)."""
+        time.sleep(self.delay_s)
+        return self.s.get(url, **kwargs)
+
+    def _fetch_text_network(self, url: str) -> str:
+        r = self.s.get(url, timeout=90)
+        r.raise_for_status()
+        r.encoding = "utf-8"
+        return r.text
+
+    def _fetch_bytes_network(self, url: str) -> bytes:
+        r = self.s.get(url, timeout=90)
+        r.raise_for_status()
+        return r.content
+
     def get_text(self, url: str) -> str:
         key = re.sub(r"[^\w.-]+", "_", urlparse(url).path)[:200]
         p = self.cache_dir / f"{key}.html" if self.cache_dir else None
         if p is not None and p.exists() and not self._should_refresh(url):
             return p.read_text(encoding="utf-8", errors="replace")
         time.sleep(self.delay_s)
-        r = self.s.get(url, timeout=90)
-        r.raise_for_status()
-        r.encoding = "utf-8"
-        text = r.text
+        fetch = _http_retry(self._fetch_text_network)
+        text = fetch(url)
         if p is not None:
             p.write_text(text, encoding="utf-8")
             self._write_sidecar(key, url)
@@ -148,9 +184,8 @@ class FedHttpSession:
         if p is not None and p.exists() and not self._should_refresh(url):
             return p.read_bytes()
         time.sleep(self.delay_s)
-        r = self.s.get(url, timeout=90)
-        r.raise_for_status()
-        data = r.content
+        fetch = _http_retry(self._fetch_bytes_network)
+        data = fetch(url)
         if p is not None:
             p.write_bytes(data)
             self._write_sidecar(key, url)

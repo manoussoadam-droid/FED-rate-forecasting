@@ -134,23 +134,6 @@ def test_repository_audit_tables_populated(tmp_path: Path) -> None:
         assert audited == 2
 
 
-def test_export_legacy_pickles_roundtrip(tmp_path: Path) -> None:
-    repo = DocumentRepository(
-        fomc_dir=tmp_path / "fomc",
-        speaker_dir=tmp_path / "speaker",
-        audit_db=tmp_path / "audit.sqlite",
-    )
-    repo.write_fomc(_fomc_input())
-    repo.write_speaker(_speaker_input())
-    fomc_pkl = tmp_path / "fomc_doc.pkl"
-    speaker_pkl = tmp_path / "speaker_doc.pkl"
-    repo.export_legacy_pickles(fomc_pickle=fomc_pkl, speaker_pickle=speaker_pkl)
-    assert fomc_pkl.exists() and speaker_pkl.exists()
-    df = pd.read_pickle(fomc_pkl)
-    assert set(df.columns) == {"date", "type", "decision", "high", "low", "document", "word_count"}
-    sp = pd.read_pickle(speaker_pkl)
-    assert "fomc-ref-date" in sp.columns and "participant" in sp.columns
-
 
 def test_normalize_speaker_frame_preserves_fomc_ref_date() -> None:
     df = normalize_speaker_frame(_speaker_input())

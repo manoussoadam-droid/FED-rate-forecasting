@@ -25,6 +25,18 @@ def main() -> None:
     speaker = load_speaker()
     train_df, test_df = build_train_test_split(fomc, speaker)
 
+    # Drop rows where text is empty or too short to be useful
+    # (FOMC stub rows where the HTTP fetch failed have blank document fields)
+    train_before = len(train_df)
+    test_before = len(test_df)
+    train_df = train_df[train_df["document"].astype(str).str.split().map(len) >= 80].reset_index(drop=True)
+    test_df = test_df[test_df["document"].astype(str).str.split().map(len) >= 80].reset_index(drop=True)
+    dropped_train = train_before - len(train_df)
+    dropped_test = test_before - len(test_df)
+    if dropped_train or dropped_test:
+        print(f"Filtered stub rows: {dropped_train} from train, {dropped_test} from test (word_count < 80)")
+    print(f"Training on {len(train_df)} rows, testing on {len(test_df)} rows")
+
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
     X_train = train_df["document"].astype(str)
@@ -43,10 +55,20 @@ def main() -> None:
     X_te = vectorizer.transform(X_test)
 
     if USE_XGBOOST:
+        import numpy as np
         import xgboost as xgb
 
         le = LabelEncoder()
         y_tr_enc = le.fit_transform(y_train)
+
+        # Compute per-sample weights to balance classes (XGBoost multi-class
+        # doesn't support class_weight natively; sample_weight achieves the same)
+        class_counts = np.bincount(y_tr_enc)
+        total = len(y_tr_enc)
+        n_classes = len(class_counts)
+        class_w = total / (n_classes * class_counts)
+        sample_weights = class_w[y_tr_enc]
+
         model = xgb.XGBClassifier(
             objective="multi:softprob",
             num_class=len(le.classes_),
@@ -56,7 +78,7 @@ def main() -> None:
             random_state=42,
             eval_metric="mlogloss",
         )
-        model.fit(X_tr, y_tr_enc)
+        model.fit(X_tr, y_tr_enc, sample_weight=sample_weights)
         model._decision_label_encoder = le  # type: ignore[attr-defined]
         kind = "xgboost"
     else:

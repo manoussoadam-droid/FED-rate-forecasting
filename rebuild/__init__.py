@@ -1,1 +1,1 @@
-"""Rebuild fomc_doc.pkl / speaker_doc.pkl from HTML cache (+ optional network / FRED)."""
+"""Rebuild FOMC/speaker Parquet corpus from HTML cache (+ optional network / FRED)."""

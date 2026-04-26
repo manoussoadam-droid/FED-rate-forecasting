@@ -1,11 +1,8 @@
-"""Load FOMC/speaker corpora with a Parquet-first, pickle-fallback strategy.
+"""Load FOMC/speaker corpora from the canonical Parquet store.
 
-The canonical store is Parquet (see :mod:`core.repository`). Historically
-the app loaded ``data/fomc_doc.pkl`` / ``data/speaker_doc.pkl`` directly, so
-both functions still accept an explicit pickle ``path`` and fall back to
-those files when the Parquet store is missing. Returned DataFrames keep the
-legacy column set (``FOMC_COLUMNS[_LEGACY]`` / ``SPEAKER_COLUMNS``) so
-existing callers do not change.
+The canonical store is Parquet (partitioned by year, see :mod:`core.repository`).
+Legacy pickle files are no longer used as a fallback; if the Parquet store is
+absent the functions raise :class:`FileNotFoundError` with rebuild instructions.
 """
 
 from __future__ import annotations
@@ -16,7 +13,7 @@ from typing import Any
 import pandas as pd
 from sklearn.utils import shuffle
 
-from core.config import FOMC_PARQUET_DIR, FOMC_PICKLE, SPEAKER_PARQUET_DIR, SPEAKER_PICKLE
+from core.config import FOMC_PARQUET_DIR, SPEAKER_PARQUET_DIR
 
 FOMC_COLUMNS = ["date", "decision", "high", "low", "document", "word_count"]
 FOMC_COLUMNS_LEGACY = ["date", "type", "decision", "high", "low", "document", "word_count"]
@@ -89,40 +86,54 @@ def _speaker_from_parquet() -> pd.DataFrame:
 
 
 def load_fomc(path: str | None = None) -> pd.DataFrame:
-    """Load FOMC corpus. When ``path`` is given, read that pickle directly.
+    """Load FOMC corpus from Parquet.
 
-    Otherwise try Parquet first and fall back to the canonical pickle.
+    ``path`` is kept for test fixtures that supply a pre-built DataFrame
+    serialised with ``pd.DataFrame.to_parquet``; pass a ``.parquet`` file
+    path, not a pickle.  Production callers should leave ``path=None``.
     """
     if path is not None:
-        df = pd.read_pickle(path)
+        df = pd.read_parquet(path)
         has_type = "type" in df.columns
         expected = FOMC_COLUMNS_LEGACY if has_type else FOMC_COLUMNS
         _validate_columns(df, expected, str(path))
         return df
-    if _parquet_dir_has_data(FOMC_PARQUET_DIR):
-        df = _fomc_from_parquet()
-        if not df.empty:
-            _validate_columns(df, FOMC_COLUMNS_LEGACY, "fomc parquet")
-            return df
-    df = pd.read_pickle(FOMC_PICKLE)
-    has_type = "type" in df.columns
-    expected = FOMC_COLUMNS_LEGACY if has_type else FOMC_COLUMNS
-    _validate_columns(df, expected, "fomc_doc.pkl")
+    if not _parquet_dir_has_data(FOMC_PARQUET_DIR):
+        raise FileNotFoundError(
+            f"FOMC Parquet store not found at {FOMC_PARQUET_DIR}. "
+            "Run `python scripts/rebuild_database.py` to populate it."
+        )
+    df = _fomc_from_parquet()
+    if df.empty:
+        raise FileNotFoundError(
+            f"FOMC Parquet store at {FOMC_PARQUET_DIR} exists but returned no rows. "
+            "Run `python scripts/rebuild_database.py` to rebuild."
+        )
+    _validate_columns(df, FOMC_COLUMNS_LEGACY, "fomc parquet")
     return df
 
 
 def load_speaker(path: str | None = None) -> pd.DataFrame:
+    """Load speaker corpus from Parquet.
+
+    ``path`` is kept for test fixtures; see :func:`load_fomc` for details.
+    """
     if path is not None:
-        df = pd.read_pickle(path)
+        df = pd.read_parquet(path)
         _validate_columns(df, SPEAKER_COLUMNS, str(path))
         return df
-    if _parquet_dir_has_data(SPEAKER_PARQUET_DIR):
-        df = _speaker_from_parquet()
-        if not df.empty:
-            _validate_columns(df, SPEAKER_COLUMNS, "speaker parquet")
-            return df
-    df = pd.read_pickle(SPEAKER_PICKLE)
-    _validate_columns(df, SPEAKER_COLUMNS, "speaker_doc.pkl")
+    if not _parquet_dir_has_data(SPEAKER_PARQUET_DIR):
+        raise FileNotFoundError(
+            f"Speaker Parquet store not found at {SPEAKER_PARQUET_DIR}. "
+            "Run `python scripts/rebuild_database.py` to populate it."
+        )
+    df = _speaker_from_parquet()
+    if df.empty:
+        raise FileNotFoundError(
+            f"Speaker Parquet store at {SPEAKER_PARQUET_DIR} exists but returned no rows. "
+            "Run `python scripts/rebuild_database.py` to rebuild."
+        )
+    _validate_columns(df, SPEAKER_COLUMNS, "speaker parquet")
     return df
 
 

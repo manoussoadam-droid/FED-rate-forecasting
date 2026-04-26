@@ -4,13 +4,17 @@
 This is the one script to rerun when new data is available.
 
 Outputs in `data/`:
-- `fomc_doc.pkl` / `speaker_doc.pkl`: fullest working pair for the app/training
-- `fomc_doc_original.pkl` / `speaker_doc_original.pkl`: original public FedNLP pair
+- `data/parquet/fomc/`    — canonical FOMC corpus (Parquet, partitioned by year)
+- `data/parquet/speaker/` — canonical speaker corpus (Parquet, partitioned by year)
+- `data/audit.sqlite`     — ingestion log + document audit + fetch errors
+- `data/fomc_doc_original.parquet`    — cached FedNLP seed (FOMC)
+- `data/speaker_doc_original.parquet` — cached FedNLP seed (speaker)
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import shutil
 import sys
@@ -23,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.config import DATA_DIR, ERRORS_CSV, FOMC_PICKLE, SPEAKER_PICKLE  # noqa: E402
+from core.config import DATA_DIR, ERRORS_CSV  # noqa: E402
 from core.ingest import FOMC_COLUMNS_LEGACY, SPEAKER_COLUMNS, load_fomc, load_speaker  # noqa: E402
 from core.repository import DocumentRepository  # noqa: E402
 from rebuild.assemble import (  # noqa: E402
@@ -37,14 +41,14 @@ from rebuild.supplements import add_bis_gap_fillers  # noqa: E402
 from scraping.fed_official import FOMC_CALENDAR_URL, FedHttpSession  # noqa: E402
 from scraping.nonfed_accessible import fetch_article  # noqa: E402
 
+# Public FedNLP seed data (pickle format from external source — read in-memory,
+# never saved to disk as pickle; cached locally as Parquet after first download).
 PUBLIC_FOMC_URL = "https://raw.githubusercontent.com/usydnlp/FedNLP/main/resources/fomc_doc.pkl"
 PUBLIC_SPEAKER_URL = "https://raw.githubusercontent.com/usydnlp/FedNLP/main/resources/speaker_doc.pkl"
-ORIGINAL_FOMC_PATH = DATA_DIR / "fomc_doc_original.pkl"
-ORIGINAL_SPEAKER_PATH = DATA_DIR / "speaker_doc_original.pkl"
+ORIGINAL_FOMC_PARQUET = DATA_DIR / "fomc_doc_original.parquet"
+ORIGINAL_SPEAKER_PARQUET = DATA_DIR / "speaker_doc_original.parquet"
 SEED_TSV = ROOT / "scripts" / "nonfed_accessible_seed_urls.tsv"
 BACKUP_DIR = ROOT / "artifacts" / "data_backups"
-BACKUP_FOMC = BACKUP_DIR / "fomc_doc.last_backup.pkl"
-BACKUP_SPEAKER = BACKUP_DIR / "speaker_doc.last_backup.pkl"
 
 
 def ensure_yyyymmdd(val: object) -> str:
@@ -73,12 +77,20 @@ def fed_mask(df: pd.DataFrame) -> pd.Series:
     )
 
 
-def backup_current_pair() -> None:
+def backup_parquet_snapshot() -> None:
+    """Copy the current Parquet store into artifacts/data_backups/ for rollback."""
+    from core.config import FOMC_PARQUET_DIR, SPEAKER_PARQUET_DIR
+
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    if FOMC_PICKLE.exists():
-        shutil.copy2(FOMC_PICKLE, BACKUP_FOMC)
-    if SPEAKER_PICKLE.exists():
-        shutil.copy2(SPEAKER_PICKLE, BACKUP_SPEAKER)
+    for src, name in [
+        (FOMC_PARQUET_DIR, "fomc_parquet_backup"),
+        (SPEAKER_PARQUET_DIR, "speaker_parquet_backup"),
+    ]:
+        if src.exists() and any(src.rglob("*.parquet")):
+            dest = BACKUP_DIR / name
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest)
 
 
 def _write_run_errors_csv(run_id: str, failures: list[str]) -> None:
@@ -95,12 +107,22 @@ def _write_run_errors_csv(run_id: str, failures: list[str]) -> None:
             fh.write(f'{run_id},supplement,"{safe}"\n')
 
 
-def download_if_needed(url: str, path: Path, *, refresh: bool) -> None:
-    if path.exists() and not refresh:
-        return
+def _fetch_fednlp_parquet(url: str, parquet_path: Path, *, refresh: bool) -> pd.DataFrame:
+    """Download a FedNLP pickle URL, read it in-memory, cache as Parquet, return DataFrame.
+
+    The external FedNLP repo only publishes pickle files.  We read the bytes
+    directly into ``io.BytesIO`` so no ``.pkl`` file is ever written to disk;
+    the result is persisted locally as Parquet for subsequent runs.
+    """
+    if parquet_path.exists() and not refresh:
+        return pd.read_parquet(parquet_path)
+    print(f"  Downloading {url} …")
     r = requests.get(url, timeout=120)
     r.raise_for_status()
-    path.write_bytes(r.content)
+    df = pd.read_pickle(io.BytesIO(r.content))  # external-source pickle, read in-memory
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(parquet_path, index=False)
+    return df
 
 
 _FOMC_EXTRAS = ("source_url", "quality_flags", "labels_from_fred", "parser_version")
@@ -234,10 +256,10 @@ def _fomc_quality_masks(fomc_df: pd.DataFrame) -> dict[str, pd.Series]:
 
 
 def print_summary(fomc_df: pd.DataFrame, speaker_df: pd.DataFrame, failures: list[str], *, bis_added: int) -> None:
-    print(f"\nWrote {FOMC_PICKLE} ({len(fomc_df)} rows)")
-    print(f"Wrote {SPEAKER_PICKLE} ({len(speaker_df)} rows)")
-    print(f"Wrote {ORIGINAL_FOMC_PATH} and {ORIGINAL_SPEAKER_PATH}")
-    print(f"Backup of previous canonical pair: {BACKUP_FOMC} / {BACKUP_SPEAKER}")
+    print(f"\nFOMC corpus: {len(fomc_df)} rows")
+    print(f"Speaker corpus: {len(speaker_df)} rows")
+    print(f"FedNLP seed cache: {ORIGINAL_FOMC_PARQUET} / {ORIGINAL_SPEAKER_PARQUET}")
+    print(f"Parquet backup: {BACKUP_DIR / 'fomc_parquet_backup'} / {BACKUP_DIR / 'speaker_parquet_backup'}")
 
     masks = _fomc_quality_masks(fomc_df)
     print("\n=== Dataset Completeness (FOMC) ===")
@@ -262,8 +284,8 @@ def print_summary(fomc_df: pd.DataFrame, speaker_df: pd.DataFrame, failures: lis
     print(f"  Speaker domain counts (top 12): {post2020_speaker['domain'].astype(str).value_counts().head(12).to_dict()}")
 
     print("\n=== ML Label Distribution (decision) ===")
-    _print_distribution("fomc_doc.pkl — decision", fomc_df["decision"])
-    _print_distribution("speaker_doc.pkl — decision", speaker_df["decision"])
+    _print_distribution("fomc corpus — decision", fomc_df["decision"])
+    _print_distribution("speaker corpus — decision", speaker_df["decision"])
     _print_distribution(
         "combined (FOMC + speaker) — decision",
         pd.concat([fomc_df["decision"], speaker_df["decision"]], ignore_index=True),
@@ -277,7 +299,7 @@ def main() -> None:
     parser.add_argument("--max-year", type=int, default=2026)
     parser.add_argument("--delay", type=float, default=0.35, help="Seconds between Fed HTTP GETs when fetching.")
     parser.add_argument("--no-fred", action="store_true", help="Do not download FRED series.")
-    parser.add_argument("--refresh-public", action="store_true", help="Redownload public original FedNLP pickles.")
+    parser.add_argument("--refresh-public", action="store_true", help="Redownload public original FedNLP seed data (ignores local Parquet cache).")
     parser.add_argument("--skip-bis-supplement", action="store_true", help="Do not add BIS Fed speech gap-fillers.")
     parser.add_argument("--skip-accessible-supplement", action="store_true", help="Do not add curated CNBC/Fox supplement.")
     parser.add_argument(
@@ -296,7 +318,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    backup_current_pair()
+    backup_parquet_snapshot()
 
     min_ymd = f"{args.min_year:04d}0101"
     max_ymd = f"{args.max_year:04d}1231"
@@ -368,14 +390,17 @@ def main() -> None:
     current_speaker = merge_speakers_nearest_fomc(speaker_raw, label_fomc)
     current_speaker = _coerce_speaker(current_speaker)
 
-    if args.offline and (not ORIGINAL_FOMC_PATH.exists() or not ORIGINAL_SPEAKER_PATH.exists()):
-        raise SystemExit("Offline mode needs existing data/fomc_doc_original.pkl and data/speaker_doc_original.pkl")
+    if args.offline and (not ORIGINAL_FOMC_PARQUET.exists() or not ORIGINAL_SPEAKER_PARQUET.exists()):
+        raise SystemExit(
+            "Offline mode requires a previously cached FedNLP seed.\n"
+            f"  Expected: {ORIGINAL_FOMC_PARQUET}\n"
+            f"  Expected: {ORIGINAL_SPEAKER_PARQUET}\n"
+            "Run once without --offline to download and cache the FedNLP seed data."
+        )
 
-    download_if_needed(PUBLIC_FOMC_URL, ORIGINAL_FOMC_PATH, refresh=args.refresh_public and not args.offline)
-    download_if_needed(PUBLIC_SPEAKER_URL, ORIGINAL_SPEAKER_PATH, refresh=args.refresh_public and not args.offline)
-
-    public_fomc = pd.read_pickle(ORIGINAL_FOMC_PATH)
-    public_speaker = pd.read_pickle(ORIGINAL_SPEAKER_PATH)
+    refresh_public = args.refresh_public and not args.offline
+    public_fomc = _fetch_fednlp_parquet(PUBLIC_FOMC_URL, ORIGINAL_FOMC_PARQUET, refresh=refresh_public)
+    public_speaker = _fetch_fednlp_parquet(PUBLIC_SPEAKER_URL, ORIGINAL_SPEAKER_PARQUET, refresh=refresh_public)
     public_fomc = _coerce_fomc(public_fomc)
     public_speaker = _coerce_speaker(public_speaker)
 
@@ -427,24 +452,17 @@ def main() -> None:
             errors_csv_path=str(ERRORS_CSV) if failures else "",
         )
 
-    # Compatibility shim: regenerate pickles from Parquet so Flask / Streamlit /
-    # training scripts continue to work unchanged.
-    pkl_fomc, pkl_speaker = repo.export_legacy_pickles()
-    print(f"Legacy pickle shim: fomc_doc.pkl={pkl_fomc}, speaker_doc.pkl={pkl_speaker}")
-
     print("\nVerifying loaders…")
-    load_fomc(str(FOMC_PICKLE))
-    load_speaker(str(SPEAKER_PICKLE))
-    load_fomc(str(ORIGINAL_FOMC_PATH))
-    load_speaker(str(ORIGINAL_SPEAKER_PATH))
-    print("OK: canonical and original pairs passed schema checks.")
+    fomc_check = load_fomc()
+    speaker_check = load_speaker()
+    print(f"OK: loaders verified — fomc={len(fomc_check)} rows, speaker={len(speaker_check)} rows")
 
     print_summary(fomc, speaker, failures, bis_added=bis_added)
     if failures:
         print("\nSkipped accessible supplement URLs:")
         for msg in failures:
             print(f"  - {msg}")
-    print("\nNext month, rerun exactly:")
+    print("\nTo refresh next month, rerun:")
     print("  python scripts/rebuild_database.py")
 
 

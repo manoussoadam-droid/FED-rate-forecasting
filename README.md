@@ -1,45 +1,329 @@
-# FOMC text tools
+# FOMC Intelligence Pipeline
 
-Python stack for exploring FOMC-related documents: pandas/sklearn pipeline, Flask API, optional Streamlit UI.
+**Data engineering and NLP infrastructure by Adam.** This repository contains the full data collection, storage, analysis API, and live inference pipeline for FOMC (Federal Open Market Committee) text analysis. The machine-learning layer is developed separately by the team — this README is written specifically to give ML teammates everything they need to understand the data, its structure, its limitations, and how to extend the models.
 
-## Data
+---
 
-Place the dataset files in `data/` (default), or set `DATA_DIR` to another directory. Expected columns for code that loads the **legacy** tables:
+## Project Goals
 
-- **fomc**: `date`, `decision`, `high`, `low`, `document`, `word_count` (optional legacy column `type` is still accepted if present)
-- **speaker**: `fomc-ref-date`, `date`, `decision`, `high`, `low`, `domain`, `participant`, `document`, `word_count` (no `type`; for combined EDA, `domain` is exposed as `type`)
+The demo has two distinct objectives:
 
-### Canonical storage (Parquet + SQLite)
+### 1. Macro direction forecast
+Given the full corpus of recent Fed speeches, minutes, press conferences, and statements, the pipeline should output the **expected future direction of the federal funds rate** over the coming weeks — specifically whether the Fed is likely to `raise`, `maintain`, or `lower` at its next meeting.
 
-The **source of truth** after a refresh is **not** the pickle files alone:
+### 2. Live speech inference
+Given a Fed speech text streaming in real time (even a partial transcript), the model should **converge on the correct rate decision faster than a human analyst** by detecting hawkish/dovish language patterns as early as the opening paragraphs.
 
-- **`data/parquet/fomc/`** and **`data/parquet/speaker/`** — columnar data partitioned by `year=YYYY`, with rich metadata: `text_content`, `source_url`, `ingested_at`, `content_hash`, `quality_score`, `quality_flags`, `parser_version`, and (FOMC) `labels_from_fred`.
-- **`data/audit.sqlite`** — ingestion runs (`ingestion_log`), per-document audit (`document_audit`), and optional fetch errors (`fetch_errors`). Used to support targeted cache refresh for low-quality rows.
+---
 
-**Loading data:** `core.ingest.load_fomc()` / `load_speaker()` read **Parquet first** when those directories contain `*.parquet`; if not, they fall back to `data/fomc_doc.pkl` / `data/speaker_doc.pkl`. Callers still receive the same legacy column names (`document`, etc.).
+## Architecture Overview
 
-**Compatibility pickles:** each successful `scripts/rebuild_database.py` run writes Parquet, then **regenerates** `data/fomc_doc.pkl` and `data/speaker_doc.pkl` from the Parquet store so older entrypoints (Flask, Streamlit, training) keep working unchanged.
+```
+federalreserve.gov ──┐
+BIS / CNBC / Fox ────┤  scraping/fed_official.py
+                     ├──► rebuild/  ──► data/parquet/  (canonical store)
+FRED API ────────────┤              ──► data/audit.sqlite
+FedNLP seed data ────┘
+                                          │
+                              core/ingest.py  (load_fomc / load_speaker)
+                                          │
+                        ┌─────────────────┼─────────────────┐
+                        ▼                 ▼                   ▼
+              core/analysis_pipeline   scripts/train_model  tools/mcp_server.py
+              (TextBlob + LM + TF-IDF  (vectorizer.joblib   (12 MCP tools via
+               + summarizer + predict)  + model.joblib)      FastMCP stdio)
+                        │
+               api/app.py (Flask REST)     streamlit_app.py (UI)
+                        │
+               tools/scheduler.py (APScheduler — hourly/4h/daily/weekly jobs)
+```
 
-**FedNLP originals:** `data/fomc_doc_original.pkl` and `data/speaker_doc_original.pkl` are the **public FedNLP** snapshots (downloaded from GitHub). They are **merge inputs** for `rebuild_database.py` (legacy non-Fed rows, historical coverage), not what `load_fomc` / `load_speaker` use by default.
+### Key components
 
-**Speaker labels (`decision`, `high`, `low`):** speeches are aligned to FOMC meetings using a **blackout-aware** rule (pre-meeting blackout window → that meeting; otherwise → most recent **prior** meeting), not a naive “nearest date” join. Fed-side rows come from `federalreserve.gov` speeches **and** annual Board testimony pages; the working speaker corpus is then enriched with non-Fed legacy rows, a conservative BIS gap-filler layer, and the curated accessible supplement.
+| Component | File | Role |
+|---|---|---|
+| Corpus rebuild | `scripts/rebuild_database.py` | One-command full rebuild of all Parquet + SQLite |
+| FOMC scraper | `scraping/fed_official.py` | Pulls statements, minutes, press conferences, speeches from federalreserve.gov |
+| FRED integration | `core/fred_api.py` + `rebuild/fred_rates.py` | Fetches rate labels and economic series; SQLite cache |
+| News fetcher | `core/news_fetcher.py` | Alpha Vantage + NewsAPI polling; stores to `news` SQLite table |
+| Scheduler | `tools/scheduler.py` | Long-running APScheduler process; hourly speech check, 4h news, daily FRED, weekly rebuild |
+| Data loader | `core/ingest.py` | `load_fomc()` / `load_speaker()` — returns legacy-compatible DataFrames from Parquet |
+| NLP pipeline | `core/analysis_pipeline.py` | Orchestrates all analysis: sentiment, summarization, prediction |
+| Classifier | `core/predict.py` | TF-IDF vectorizer + Logistic Regression (or XGBoost) inference |
+| Sentiment | `core/sentiment_lm.py` | Loughran-McDonald financial lexicon scoring (or keyword fallback) |
+| Flask API | `api/app.py` | REST endpoints: `POST /api/v1/analyze`, `GET /api/v1/sample` |
+| Streamlit UI | `streamlit_app.py` | Browser demo: corpus EDA, live text analysis tab, Flask API tab |
+| MCP server | `tools/mcp_server.py` | 12-tool MCP server for AI assistant integration |
+| Audit | `rebuild/audit.py` | Writes per-document quality flags to `document_audit` SQLite table |
 
-**Post-2020 extraction:** statements/minutes/press conferences use robust HTML/PDF parsing (PyMuPDF-first PDF text). Failed extractions are recorded with **`quality_flags`** (e.g. `no_text`, `pdf_unreadable`) instead of inventing placeholder document text; FRED may still supply rate **labels** when statement HTML cannot be parsed.
+---
 
-**Retraining notes:** (1) `build_train_test_split` puts the **first 70% of speaker rows in file order** (+ all FOMC) in train and the **last 30%** in test, then shuffles. If you sort or rebuild the speaker DataFrame, train/test composition changes even with the same `random_state`. (2) After adding years of data, class counts for `raise` / `lower` change; read the printed `classification_report` when retraining — rare classes can score worse or show zeros until you have enough examples.
+## Data Storage
 
-## What Changed
+### Canonical store — Parquet + SQLite
 
-Recent dataset and pipeline work by **Adam**:
+There are **no pickle files**. All persistent data is columnar:
 
-- Rebuilt the missing dataset layer into a reproducible 4-file structure: `fomc_doc.pkl`, `speaker_doc.pkl`, `fomc_doc_original.pkl`, and `speaker_doc_original.pkl`.
-- Added a **Parquet + SQLite** canonical layer under `data/parquet/` and `data/audit.sqlite`, with migration via `python scripts/migrate_pickle_to_parquet.py` for existing pickle-only checkouts.
-- Extended post-2020 coverage by adding live official FOMC `statement`, `minutes`, and `press-conference` documents to the canonical corpus.
-- Expanded the speaker dataset beyond the original speech feed by ingesting official Board `speech` and `testimony` pages and aligning them to FOMC meetings with **blackout-aware** labels (not nearest-date-only).
-- Reworked the refresh process into one clear command, `python scripts/rebuild_database.py`, which writes Parquet + audit, then exports legacy pickles; backup/restore still supported for safer dataset updates.
-- Added controlled supplemental enrichment from legacy public FedNLP data, BIS gap-fillers, and accessible non-Fed media sources while preserving official-source precedence.
-- Improved dataset audit output so refresh runs report coverage, document-type balance, and label distribution; added `python scripts/audit_completeness.py` to check statement / minutes / press-conference presence by year (exit code non-zero if incomplete).
-- HTTP cache supports **`--force-refresh-stubs`** / **`--force-refresh-all`** on rebuild to bypass disk cache for URLs flagged in the audit DB (upgrade stubs after parser improvements).
+| Location | Content |
+|---|---|
+| `data/parquet/fomc/year=YYYY/` | FOMC corpus partitioned by year |
+| `data/parquet/speaker/year=YYYY/` | Speaker corpus partitioned by year |
+| `data/audit.sqlite` | All audit, cache, news, and scheduler tables (see below) |
+| `data/fomc_doc_original.parquet` | Cached FedNLP public seed (FOMC) |
+| `data/speaker_doc_original.parquet` | Cached FedNLP public seed (speaker) |
+
+### Parquet schema
+
+Both corpora share these rich metadata columns written by `rebuild/`:
+
+| Column | Type | Description |
+|---|---|---|
+| `date` | str (YYYYMMDD) | Document date |
+| `document_type` | str | `statement`, `minutes`, `press-conference`, `speech`, `testimony` |
+| `decision` | str | Rate decision label: `maintain`, `raise`, `lower` |
+| `high` | float | Fed funds target range upper bound at that meeting |
+| `low` | float | Fed funds target range lower bound |
+| `text_content` | str | Full parsed document text |
+| `source_url` | str | Canonical URL |
+| `ingested_at` | str ISO | Timestamp when row was written |
+| `content_hash` | str | SHA-256 of text — used for change detection |
+| `quality_score` | float | 0–1 quality estimate |
+| `quality_flags` | list[str] | `no_text`, `pdf_unreadable`, `stub`, etc. |
+| `parser_version` | str | Parser version that produced this row |
+| `labels_from_fred` | bool | Whether decision/high/low came from FRED fallback |
+| `domain` | str | (speaker only) Source domain |
+| `participant` | str | (speaker only) Speaker name |
+| `fomc_ref_date` | str | (speaker only) FOMC meeting this speech is aligned to |
+
+### SQLite tables in `data/audit.sqlite`
+
+| Table | Content |
+|---|---|
+| `ingestion_log` | One row per rebuild run — timestamps, counts, errors |
+| `document_audit` | Per-document quality audit: URL, hash, flags, parse status |
+| `fetch_errors` | HTTP errors during scraping — URL, status code, message |
+| `fred_cache` | FRED series observations cached locally — `series_id`, `obs_date`, `value` |
+| `news` | Financial news articles — `source`, `title`, `url`, `published_at`, `sentiment_score`, `sentiment_label` |
+| `scheduler_log` | APScheduler job history — job name, status, records added, errors |
+| `_feed_hashes` | Hash of Fed speeches JSON feed — used to detect new speeches cheaply |
+
+### Ingest projection layer
+
+`core/ingest.py` exposes a **legacy-compatible** DataFrame view over the Parquet store. Callers always receive these column names regardless of the underlying Parquet schema:
+
+- **FOMC:** `date`, `type`, `decision`, `high`, `low`, `document`, `word_count`
+- **Speaker:** `fomc-ref-date`, `date`, `decision`, `high`, `low`, `domain`, `participant`, `document`, `word_count`
+
+The `document` column maps to `text_content` in Parquet. Do not break this contract when adding columns — extend Parquet and update the projection in `_fomc_from_parquet()` / `_speaker_from_parquet()`.
+
+---
+
+## Live Web Scraping
+
+### How it works
+
+The scraping stack has two layers:
+
+**1. On-demand rebuild** (`scripts/rebuild_database.py`)
+
+Running `python scripts/rebuild_database.py` executes the full pipeline in order:
+1. Fetches the Fed speeches JSON feed from `federalreserve.gov/feeds/speeches.json`
+2. Crawls official speech and testimony pages with `scraping/fed_official.py` (rate-limited, HTML cached under `data/.cache/fed_html/`)
+3. Fetches FOMC statements, minutes, and press-conference PDFs for each known meeting date
+4. Downloads the public FedNLP seed data on first run (cached as Parquet — no re-download unless `--refresh-public` is passed)
+5. Merges BIS gap-filler speeches where official Fed coverage is missing
+6. Merges a curated accessible supplement (CNBC / Fox Business Fed interviews)
+7. Writes canonical Parquet + audit SQLite
+8. Logs ingestion run to `ingestion_log`
+
+HTML responses are disk-cached in `data/.cache/fed_html/`. Pass `--force-refresh-stubs` to re-fetch only URLs flagged with bad quality, or `--force-refresh-all` to bypass the cache entirely.
+
+**2. Continuous scheduler** (`tools/scheduler.py`)
+
+When running as a long-lived process (`python tools/scheduler.py`), four APScheduler jobs fire automatically:
+
+| Job | Frequency | What it does |
+|---|---|---|
+| `check_fed_speeches` | Every 60 min | Hashes the Fed speeches JSON feed; logs a change if the feed differs from the last known hash |
+| `fetch_news` | Every 4 hours | Calls `fetch_all_news()` — queries Alpha Vantage + NewsAPI for Fed-related articles, deduplicates by URL, inserts new rows into `news` table |
+| `refresh_fred` | Daily at 03:00 UTC | Re-fetches all `FRED_DEFAULT_SERIES` and upserts `fred_cache` |
+| `full_rebuild` | Every Monday 06:00 UTC | Runs `scripts/rebuild_database.py` as a subprocess — full corpus refresh |
+
+The scheduler also runs `fetch_news` and `refresh_fred` immediately on startup so the DB is populated without waiting for the first scheduled window.
+
+### Document parsing
+
+`scraping/document_parser.py` handles HTML and PDF extraction:
+- **HTML:** BeautifulSoup, removes boilerplate navigation/footer, extracts main content
+- **PDF:** PyMuPDF-first (better layout reconstruction), fallback to pypdf
+- Failed extractions write a `quality_flags` list (`no_text`, `pdf_unreadable`) rather than inventing placeholder text — this means you can query for stubs and re-fetch them after parser improvements
+
+### Speaker label alignment — blackout-aware
+
+This is one of the most important design decisions in the pipeline. Fed governors observe a communication blackout starting ~10 days before each FOMC meeting. A speech given during the blackout window should be labeled to the *upcoming* meeting, not the most recent past one. `rebuild/meetings.py` implements:
+
+- If the speech date falls within the pre-meeting blackout window → label to **that upcoming meeting**
+- Otherwise → label to the **most recent prior meeting**
+
+This is more accurate than naive nearest-date joins used in most public Fed NLP datasets.
+
+---
+
+## API Keys
+
+All keys are optional — the pipeline degrades gracefully when absent. Configure in `.env` (copy from `.env.example`).
+
+| Key | Variable | Source | Required for | Free tier |
+|---|---|---|---|---|
+| FRED API | `FRED_API_KEY` | [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html) | Faster/cleaner rate label fetch; falls back to public CSV | Yes — free |
+| NewsAPI | `NEWS_API_KEY` | [newsapi.org/register](https://newsapi.org/register) | Financial news fetch (secondary source) | Yes — 100 req/day |
+| Alpha Vantage | `ALPHA_VANTAGE_KEY` | [alphavantage.co](https://www.alphavantage.co/support/#api-key) | Financial news + sentiment (primary news source) | Yes — 500 calls/day |
+| OpenAI | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com) | Abstractive summary in `/api/v1/analyze`; falls back to TextRank | No — paid |
+| Flask auth | `API_KEY` | Generate with `python -c "import secrets; print(secrets.token_hex(32))"` | Secures `/api/v1/*` endpoints in production | N/A |
+
+**Without any key:** the pipeline still runs fully — FRED uses CSV download, news fetching is skipped with a warning, OpenAI summary returns null, Flask routes are unauthenticated.
+
+### Loughran-McDonald dictionary (optional, recommended)
+Set `LM_DICT_PATH` to the path of the tab-separated [LM Master Dictionary](https://sraf.nd.edu/loughranmcdonald-master-dictionary/) file. Without it, a small keyword fallback is used for `score_lm_style()`. The LM dictionary dramatically improves the quality of financial sentiment scoring. Download the CSV from Notre Dame SRAF, convert to TSV, set the path.
+
+---
+
+## FRED Default Series
+
+These series are fetched daily by the scheduler and cached in `fred_cache`:
+
+| Series ID | Description |
+|---|---|
+| `DFEDTARL` | Fed funds target range lower bound |
+| `DFEDTARU` | Fed funds target range upper bound |
+| `FEDFUNDS` | Effective federal funds rate |
+| `T10Y2Y` | 10-year minus 2-year Treasury spread (recession indicator) |
+| `UNRATE` | Unemployment rate |
+| `CPIAUCSL` | CPI all urban consumers |
+
+---
+
+## MCP Server
+
+`tools/mcp_server.py` exposes 12 tools via the [MCP](https://github.com/anthropics/model-context-protocol) stdio protocol. Run with `python tools/mcp_server.py` and connect any MCP-compatible AI assistant.
+
+| Tool | Description |
+|---|---|
+| `analyze_fed_text` | Full NLP pipeline on raw text — returns prediction, sentiment, summary, word cloud |
+| `random_corpus_document` | Random document from combined FOMC + speaker Parquet corpus |
+| `trigger_scrape_fed` | Live scrape of federalreserve.gov — checks speeches feed and FOMC calendar |
+| `trigger_scrape_news` | Fetch news from Alpha Vantage + NewsAPI for a given query |
+| `query_database` | Safe read-only SQL SELECT on `audit.sqlite` — up to 500 rows |
+| `get_latest_documents` | Newest N documents from Parquet corpus |
+| `search_corpus` | Keyword substring search across all document text |
+| `get_fred_series` | FRED series observations (cache-first) |
+| `get_fomc_calendar` | Upcoming FOMC meeting dates scraped from federalreserve.gov |
+| `get_corpus_stats` | Row counts, year range, decision distribution, news counts, FRED cache list |
+| `get_audit_report` | Recent ingestion runs, quality flag distribution, fetch errors |
+| `get_scheduler_status` | Last 20 APScheduler job run records |
+
+---
+
+## Current Model (ML teammates: read this)
+
+### What is trained
+
+`scripts/train_model.py` trains a **TF-IDF + Logistic Regression** classifier (optionally XGBoost via `USE_XGBOOST=1`):
+
+- **Input:** `document` text column (full document text)
+- **Target:** `decision` column — three classes: `maintain`, `raise`, `lower`
+- **Vectorizer:** TF-IDF, 50,000 features, unigrams + bigrams, `sublinear_tf=True`, `min_df=2`, `max_df=0.95`
+- **Model:** Logistic Regression with `class_weight="balanced"`, `solver="saga"`, `max_iter=10000`
+- **XGBoost variant:** `multi:softprob`, 200 estimators, depth 6, manual per-sample class weights
+
+Artifacts saved to `artifacts/`: `vectorizer.joblib`, `model.joblib`, `model_meta.joblib`
+
+### Train / test split
+
+```python
+# All FOMC documents → training
+# Speaker: first 70% (by row order) → training, last 30% → test
+train_df = concat([all_fomc, speaker[:70%]])
+test_df  = speaker[70%:]
+```
+
+**Critical note:** All FOMC rows go into training. The model has seen every official statement, minutes, and press conference. The test set is speaker speeches only. Reported metrics reflect speaker-speech generalization, not FOMC-document generalization.
+
+**Critical note 2:** The 70/30 split is by **row order**, not by date. If you sort or filter the speaker DataFrame before calling `build_train_test_split`, the train/test composition changes even with the same `random_state`. Always sort by date before splitting for a valid temporal holdout.
+
+### Running inference
+
+```python
+from core.predict import predict_decision
+from core.text_clean import clean_for_ml
+from core.config import MAX_TEXT_CHARS_FOR_VECTOR
+
+result = predict_decision(clean_for_ml(text, MAX_TEXT_CHARS_FOR_VECTOR))
+# result = {
+#   "prediction": "maintain" | "raise" | "lower",
+#   "probabilities": {"lower": 0.42, "maintain": 0.35, "raise": 0.23},
+#   "top_features": [{"token": "rate cuts", "contribution": 0.017}, ...],
+#   "error": None
+# }
+```
+
+The `top_features` list contains the TF-IDF × coefficient contribution for each token — useful for explaining what language drove the prediction.
+
+---
+
+## Strengths and Weaknesses
+
+### Strengths
+
+| Strength | Detail |
+|---|---|
+| Ground-truth labels | `decision` comes from FRED actual target range — not market estimates |
+| Blackout-aware alignment | Speaker speeches are aligned to meetings using the pre-meeting blackout window, not naive date proximity |
+| Document type diversity | Statements, minutes, press conferences, speeches, testimony — all in one corpus |
+| Quality flags | Failed extractions are flagged (`no_text`, `pdf_unreadable`) instead of silently inserted as blank rows — the model never trains on empty stubs |
+| Fully reproducible | One command (`rebuild_database.py`) rebuilds everything from scratch; Parquet snapshots are backed up |
+| No pickle files | All data is Parquet or SQLite — portable, inspectable, Git-friendly |
+| Continuous ingestion | Scheduler keeps the corpus live: new speeches appear within 60 minutes of publication |
+| Dissent detection | Because the model is trained on full statement text, it picks up dissenting vote language (e.g. "preferred to lower the target range") — this is genuine dovish pressure signal |
+
+### Weaknesses
+
+| Weakness | Detail | Fix |
+|---|---|---|
+| Class imbalance | `lower` is rare (~5–10% of corpus). Model consistently misclassifies `lower` events. | Stratified split + SMOTE or synthetic augmentation on `lower` class |
+| Bag-of-words architecture | TF-IDF has no concept of word position or discourse structure. "Inflation is elevated" in paragraph 1 vs 12 looks identical. | Replace or augment with FinBERT / sentence embeddings |
+| Trained on complete documents | Model never sees partial transcripts during training. Feeding it the first 500 words of a speech produces miscalibrated probabilities. | Augment training with partial documents at 25% / 50% / 75% completion |
+| All FOMC rows in training | Every official statement and minutes document is in the training set. In-sample predictions on FOMC documents are inflated. | Hold out the last 2–3 years of FOMC docs for a true test set |
+| Temporal split by row order, not date | Speaker rows may not be chronologically ordered, causing future data to leak into training. | Sort speaker DataFrame by date before splitting |
+| Short speeches | Powell media interviews (400–650 words) are far below the ~4,000-word training average. Predictions from short texts are noisy. | Filter by word count or apply a confidence threshold based on document length |
+| No stagflation awareness | "Tariffs + uncertainty + cut language" is a stagflationary pattern (hold, not cut) that the model reads as dovish. TF-IDF cannot distinguish cause from signal. | Add macro context features: CPI trend, unemployment delta, T10Y2Y spread from `fred_cache` |
+| No calibration | Probabilities are not Platt-calibrated. 57% "lower" does not mean 57% real-world probability. | Add `CalibratedClassifierCV` after training |
+
+---
+
+## Demo Readiness Assessment
+
+### Goal 1 — Macro direction forecast
+
+**Current state:** The ensemble across 14 post-March 2026 speeches gives `lower: 42.5%`, `maintain: 29.3%`, `raise: 28.2%`. The model leans dovish but no class exceeds 50%. The signal is directionally meaningful — the language is more dovish than typical "maintain" periods — but not confident enough for a sharp prediction.
+
+**What is needed to improve this:**
+- Add FRED macro features (`UNRATE` delta, `CPIAUCSL` trend, `T10Y2Y` spread) as numeric features alongside TF-IDF
+- Build an ensemble over document types weighted by recency and document authority (statement > minutes > speech)
+- Calibrate probabilities with `CalibratedClassifierCV`
+
+### Goal 2 — Live speech inference faster than a human
+
+**Current state:** Not achievable with the current architecture. The model was trained exclusively on complete documents. Feeding it a partial transcript produces a feature vector with a distribution the model has never seen during training (covariate shift). Probabilities are unreliable.
+
+**What is needed:**
+1. **Partial-document augmentation:** For each training document, generate training examples at 10%, 25%, 50%, 75%, and 100% completion with the same label. The model then learns what a partial document looks like at each stage.
+2. **Chunk inference loop:** At inference time, call `predict_decision` with progressively growing text — `text[:200]`, `text[:500]`, `text[:1000]`, etc. — and track how the probability of each class evolves. A threshold on confidence (e.g. P(class) > 0.75) triggers the early call.
+3. **Sequential model (optional, higher ceiling):** FinBERT or a sentence-level LSTM processes the speech sentence-by-sentence and updates a running hidden state. This is the architecture needed to genuinely beat a human analyst.
+
+A practical first step that requires no architectural change: implement the **chunk inference loop** in `core/predict.py` as a new `predict_streaming(text, chunk_sizes=[200, 500, 1000, 2000, 5000])` function that returns a list of `(words_seen, prediction, probabilities)` tuples. This already shows how confidence evolves during a speech and is a compelling demo.
+
+---
 
 ## Setup
 
@@ -50,126 +334,75 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python -m nltk.downloader punkt
 python -m textblob.download_corpora
-cp .env.example .env   # optional
+cp .env.example .env   # add your API keys
 ```
 
-If you **rename or move** this project folder, either recreate the venv (remove `.venv` and run the commands above again) or expect broken shebangs in `.venv/bin/*` until you do.
-
-## Train classifier (`decision`: maintain / raise / lower)
-
-```bash
-python scripts/train_model.py
-```
-
-Artifacts: `artifacts/vectorizer.joblib`, `artifacts/model.joblib`, `artifacts/model_meta.joblib`.
-
-## API (Flask)
-
-```bash
-export FLASK_APP=api.app:create_app
-flask run --host 127.0.0.1 --port 5000
-```
-
-Or: `python api/app.py`
-
-- `GET /health`
-- `POST /api/v1/analyze` JSON `{"text": "..."}`
-- `GET /api/v1/sample` random row from combined corpus
-
-## Streamlit
-
-```bash
-streamlit run streamlit_app.py
-```
-
-## MCP server (optional)
-
-```bash
-python tools/mcp_server.py
-```
-
-## Scraping
-
-See `scraping/README.md` (example only; respect robots.txt and site terms).
-
-### Refresh the datasets
-
-Use one command to refresh the full dataset (FedNLP originals + working pickles + Parquet + audit):
-
-```bash
-python scripts/rebuild_database.py
-```
-
-What it does:
-
-- rebuilds the current **Fed-side** corpus from the local HTML cache plus optional network fetches
-- extends the live FOMC table with official `statement`, `minutes`, and `press-conference` documents where available
-- extends the live Board speaker table with official `speech` and `testimony` pages
-- refreshes the public **original** FedNLP pair into `data/fomc_doc_original.pkl` and `data/speaker_doc_original.pkl`
-- merges non-Fed legacy rows back into the working speaker corpus
-- adds BIS rows only when they still fill a gap after official Board/Fed ingestion
-- adds the curated, currently accessible CNBC / Fox Business supplement
-- writes the **canonical** dataset to **`data/parquet/`** (partitioned by year) and logs to **`data/audit.sqlite`**
-- regenerates **`data/fomc_doc.pkl`** and **`data/speaker_doc.pkl`** from Parquet (compatibility shim for existing loaders)
-- appends supplement failures to **`data/errors.csv`** when present
-- stores a backup of the previous working pickle pair in `artifacts/data_backups/`
-
-Useful options:
-
-- `--offline` : use only local cache / already-downloaded originals
-- `--refresh-public` : re-download the public original FedNLP pair
-- `--skip-bis-supplement` : skip the conservative BIS Fed speech gap-filler
-- `--skip-accessible-supplement` : skip the curated CNBC / Fox Business add-on
-- `--no-fred` : skip FRED target-range fallback
-- `--force-refresh-stubs` : re-fetch URLs listed in the audit DB with bad `quality_flags` (bypasses cache for those URLs)
-- `--force-refresh-all` : bypass on-disk HTML/PDF cache for every request this run
-
-**Completeness check (after a rebuild):**
-
-```bash
-python scripts/audit_completeness.py --min-year 2020 --format md
-```
-
-To restore the previous working pair:
-
-```bash
-python scripts/restore_dataset_backup.py
-```
-
-HTML responses from the Fed are cached under `data/.cache/fed_html/` (gitignored).
-
-## OpenAI (optional)
-
-Set `OPENAI_API_KEY` in `.env` for abstractive summary in `/api/v1/analyze`. Without a key, extractive TextRank still runs.
-
-## Loughran–McDonald dictionary (optional)
-
-Set `LM_DICT_PATH` to a tab-separated **Master Dictionary** file with a `Word` column and sentiment columns. Without it, a small keyword fallback is used (see code).
+If you rename or move the project folder, recreate the venv — broken shebangs in `.venv/bin/*` will cause import errors.
 
 ---
 
-## À faire (équipe — fin du projet)
+## Key Commands
 
-Pistes concrètes ; cochez dans les Issues GitHub ou un tableau partagé.
+```bash
+# Rebuild the full corpus from scratch
+python scripts/rebuild_database.py
 
-1. **Modèle** : améliorer `raise` / `lower` (rappel faible sur le jeu de test) — stratified split, `class_weight`, ou sur-échantillonnage ; documenter les choix dans le rapport.
-2. **Données** : si vous régénérez le corpus, utilisez `python scripts/rebuild_database.py` (Parquet + pickles + originaux FedNLP) et `python scripts/restore_dataset_backup.py` pour revenir au dernier jeu pickle sauvegardé ; migration initiale pickle → Parquet : `python scripts/migrate_pickle_to_parquet.py`.
-3. **Produit / cours** : finaliser la démo (Streamlit ou Flask), texte d’intro, captures ; optionnel : déploiement (Vercel / hébergeur Python) selon consignes du cours.
-4. **Qualité** : lancer `pytest`, noter les limites (scraping, clés API optionnelles) et citer les sources Fed dans le README du rendu.
-5. **Secrets** : ne jamais committer `.env` ; seulement `.env.example`.
+# Rebuild with specific overrides
+python scripts/rebuild_database.py --offline                 # use local cache only
+python scripts/rebuild_database.py --no-fred                 # skip FRED label fallback
+python scripts/rebuild_database.py --force-refresh-stubs     # re-fetch flagged bad URLs
+python scripts/rebuild_database.py --force-refresh-all       # bypass all HTML cache
 
-## Publier sur GitHub (premier push)
+# Check coverage after rebuild
+python scripts/audit_completeness.py --min-year 2020 --format md
 
-1. Créer un **nouveau dépôt vide** sur [github.com/new](https://github.com/new) (sans README s’il existe déjà localement).
-2. Dans ce dossier, après le premier commit :
+# Restore previous Parquet snapshot
+python scripts/restore_dataset_backup.py
+
+# Train the classifier
+python scripts/train_model.py                  # Logistic Regression (default)
+USE_XGBOOST=1 python scripts/train_model.py   # XGBoost variant
+
+# Run Flask API
+python api/app.py                              # or: flask run --port 5000
+
+# Run Streamlit UI
+streamlit run streamlit_app.py
+
+# Run continuous scheduler (long-lived process)
+python tools/scheduler.py
+
+# Run MCP server (stdio, for AI assistant integration)
+python tools/mcp_server.py
+
+# Run tests
+pytest
+```
+
+---
+
+## Versioned Content
+
+| What | Git status |
+|---|---|
+| Code, `requirements.txt`, this README | Commit |
+| `data/parquet/` | Optional — large, can reconstruct with `rebuild_database.py` |
+| `data/audit.sqlite` | Optional — can reconstruct |
+| `.venv/` | Never commit |
+| `.env` | Never commit — use `.env.example` only |
+| `artifacts/*.joblib` | Optional — can reconstruct with `train_model.py` |
+| `data/.cache/` | Never commit — local HTTP cache, gitignored |
+
+---
+
+## First GitHub Push
+
+1. Create a new empty repository at [github.com/new](https://github.com/new) (no README if one already exists locally).
+2. From this folder after the first commit:
 
 ```bash
 cd fomc_tools
-git remote add origin git@github.com:VOTRE_USER/VOTRE_REPO.git
+git remote add origin git@github.com:YOUR_USER/YOUR_REPO.git
 git branch -M main
 git push -u origin main
 ```
-
-(Remplacez par l’URL HTTPS si vous préférez : `https://github.com/VOTRE_USER/VOTRE_REPO.git`.)
-
-**Contenu versionné :** code, `requirements.txt`, `data/*.pkl` (~31 Mo) si vous versionnez les données, docs. **Optionnel / volumineux :** `data/parquet/` (jeu columnar), `data/audit.sqlite`. **Exclus :** `.venv/`, `.env`, `artifacts/*.joblib`, `data/.cache/`, exports locaux `data/manual_review/*.csv` (voir `.gitignore`).

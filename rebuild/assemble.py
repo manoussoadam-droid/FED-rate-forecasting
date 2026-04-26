@@ -284,7 +284,7 @@ def build_fomc_dataframe(
             )
 
     df = pd.DataFrame(rows)
-    # Keep the extended columns; callers that want the legacy pickle schema
+    # Keep the extended columns; callers that want the legacy column set
     # should project to ``FOMC_COLUMNS_LEGACY`` explicitly.
     base_cols = list(FOMC_COLUMNS_LEGACY)
     extras = [c for c in ("source_url", "quality_flags", "labels_from_fred", "parser_version") if c in df.columns]

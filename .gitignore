@@ -1,7 +1,9 @@
 .venv/
+.tmp/
 __pycache__/
 *.pyc
 .env
+*.log
 .pytest_cache/
 .mypy_cache/
 artifacts/*.joblib

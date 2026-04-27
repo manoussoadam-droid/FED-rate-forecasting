@@ -14,14 +14,30 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from core.config import DATA_DIR
 from core.analysis_pipeline import analyze_text
+from core.config import DATA_DIR
 from core.ingest import (
     add_parsed_dates,
     build_combined_eda_frame,
     load_fomc,
     load_speaker,
 )
+
+
+def _render_list(title: str, items: list[str]) -> None:
+    st.markdown(f"**{title}**")
+    for item in items:
+        st.markdown(f"- {item}")
+
+
+def _render_signal_block(title: str, signals: list[dict[str, str]]) -> None:
+    st.markdown(f"**{title}**")
+    if not signals:
+        st.caption("No clear signal phrases detected.")
+        return
+    for item in signals:
+        st.markdown(item["excerpt_html"], unsafe_allow_html=True)
+
 
 st.set_page_config(page_title="FOMC text tools", layout="wide")
 st.title("FOMC text tools")
@@ -65,16 +81,56 @@ with tab_data:
         st.error(str(e))
 
 with tab_analyze:
-    text = st.text_area("Paste text", height=240, placeholder="FOMC or speech excerpt…")
+    text = st.text_area("Paste text", height=240, placeholder="FOMC or speech excerpt...")
     if st.button("Run local analysis"):
         if text.strip():
-            with st.spinner("Analyzing…"):
+            with st.spinner("Analyzing..."):
                 out = analyze_text(text)
-            st.json(out)
+
+            final = out.get("final_classification", {})
+            st.subheader("Final Classification")
+            st.markdown(f"**{final.get('label', 'Unknown')}** | Confidence: **{final.get('confidence', 'Low')}**")
+            if final.get("justification"):
+                st.write(final["justification"])
+
+            dashboard = out.get("metrics_dashboard", {})
+            col1, col2 = st.columns(2)
+            with col1:
+                _render_list(
+                    "Macroeconomic Signal Overview",
+                    dashboard.get("macroeconomic_signal_overview", []),
+                )
+            with col2:
+                _render_list(
+                    "Sentiment Indicators",
+                    dashboard.get("sentiment_indicators", []),
+                )
+
+            st.subheader("Signal Highlights")
+            col3, col4 = st.columns(2)
+            with col3:
+                _render_signal_block(
+                    "Hawkish signals",
+                    out.get("signal_highlights", {}).get("hawkish", []),
+                )
+            with col4:
+                _render_signal_block(
+                    "Dovish signals",
+                    out.get("signal_highlights", {}).get("dovish", []),
+                )
+
+            summary = out.get("summary_textrank") or out.get("summary_openai")
+            if summary:
+                st.subheader("Short Summary")
+                st.write(summary)
+
             if out.get("wordcloud_png_base64"):
                 import base64
 
                 st.image(base64.b64decode(out["wordcloud_png_base64"]), use_container_width=True)
+
+            with st.expander("Raw analysis payload"):
+                st.json(out)
         else:
             st.warning("Enter some text.")
 

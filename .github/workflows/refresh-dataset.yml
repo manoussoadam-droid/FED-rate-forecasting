@@ -21,11 +21,9 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: fomc_tools
     env:
       PYTHONUNBUFFERED: "1"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,7 +33,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: fomc_tools/requirements.txt
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
@@ -79,11 +77,11 @@ jobs:
         with:
           name: fednlp-refresh-${{ github.run_id }}
           path: |
-            fomc_tools/rebuild.log
-            fomc_tools/audit_report.md
-            fomc_tools/data/errors.csv
-            fomc_tools/data/audit.sqlite
-            fomc_tools/data/parquet/**
+            rebuild.log
+            audit_report.md
+            data/errors.csv
+            data/audit.sqlite
+            data/parquet/**
           if-no-files-found: ignore
           retention-days: 30
 

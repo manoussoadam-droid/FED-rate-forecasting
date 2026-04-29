@@ -1,14 +1,17 @@
 .venv/
-.tmp/
+venv/
 __pycache__/
 *.pyc
 .env
-*.log
 .pytest_cache/
 .mypy_cache/
-artifacts/*.joblib
+**/*.joblib
 artifacts/data_backups/
+artifacts/policy_signal_tuning/runs/
 data/.cache/
+data/*.sqlite*
+data/*.pkl
+data/parquet/
 # Optional local QA exports (regenerate from Python one-liner in README if needed)
 data/manual_review/*.csv
 

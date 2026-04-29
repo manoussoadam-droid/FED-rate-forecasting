@@ -23,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONUNBUFFERED: "1"
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -90,10 +89,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh label create data-quality \
-            --color e4e669 \
-            --description "Automated data pipeline quality alert" \
-            --force
           TITLE="FedNLP completeness audit failed $(date -u +%Y-%m-%d)"
           BODY_FILE=issue_body.md
           {

@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 **/*.joblib
+!artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib
 artifacts/data_backups/
 artifacts/policy_signal_tuning/runs/
 data/.cache/

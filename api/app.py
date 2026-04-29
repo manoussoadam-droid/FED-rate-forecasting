@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import hmac
 import logging
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ def _require_api_key(fn):
     def wrapper(*args, **kwargs):
         if API_KEY:
             provided = request.headers.get("X-API-Key", "")
-            if provided != API_KEY:
+            if not hmac.compare_digest(provided, API_KEY):
                 return jsonify({"error": "Unauthorized — valid X-API-Key header required"}), 401
         return fn(*args, **kwargs)
     return wrapper
@@ -124,8 +125,16 @@ def create_app() -> Flask:
         return render_template("index.html")
 
     @app.post("/analyze-form")
+    @_require_api_key
+    @_api_limit
     def analyze_form():
         text = request.form.get("text") or ""
+        if len(str(text)) > 500_000:
+            return render_template(
+                "index.html",
+                text=str(text)[:2_000],
+                error="Text too long. Please submit 500,000 characters or fewer.",
+            ), 413
         result = analyze_text(text) if text.strip() else None
         return render_template("index.html", text=text, result=result)
 

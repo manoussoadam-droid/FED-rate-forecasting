@@ -333,11 +333,10 @@ python scripts/tune_policy_signal_models.py --cleanup-runs-only
 
 The Streamlit **Policy signal ML** tab loads
 `artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib` when
-that local artifact has been generated or restored. Joblib model binaries are
-gitignored, so a fresh clone should run `python scripts/tune_policy_signal_models.py`
-or obtain the artifact from the project team before using the pasted-text
-early-warning path. Corpus dropdowns and macro aggregation also require local
-`data/parquet/` files.
+that artifact is available. Most joblib model binaries are gitignored, but the
+small tuned policy-signal artifact is intentionally included on deployment
+branches so the Streamlit early-warning demo works immediately. Corpus dropdowns
+and macro aggregation also require local `data/parquet/` files.
 
 ### Train / test split
 
@@ -466,7 +465,7 @@ The Streamlit app supports two demo modes:
 
 | Mode | Requires |
 |---|---|
-| Paste-your-own text policy-signal inference | Local tuned artifact at `artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib`; generate with `python scripts/tune_policy_signal_models.py` if absent |
+| Paste-your-own text policy-signal inference | Tuned artifact at `artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib`; deployment branch includes this small artifact |
 | Corpus dropdowns, corpus charts, and macro aggregation | Local corpus files under `data/parquet/` |
 
 If `data/parquet/` is unavailable, the pasted-text early-warning demo still
@@ -534,7 +533,7 @@ pytest
 | `data/audit.sqlite` | Optional — can reconstruct |
 | `.venv/` | Never commit |
 | `.env` | Never commit — use `.env.example` only |
-| `**/*.joblib` model artifacts | Do not commit — reconstruct with `train_model.py` or `scripts/tune_policy_signal_models.py` |
+| `**/*.joblib` model artifacts | Usually do not commit; exception: `artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib` is included for Streamlit demo deployment |
 | `data/.cache/` | Never commit — local HTTP cache, gitignored |
 
 ---

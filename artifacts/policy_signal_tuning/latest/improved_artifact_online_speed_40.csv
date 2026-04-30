@@ -1,0 +1,41 @@
+row_id,event_date,source,speaker,true_action,cue_pct,first_stable_correct_pct,early_by_50pct,correct_before_explicit_cue,final_prediction,final_correct
+1470,2026-01-16,speaker,Vice Chair Philip N. Jefferson,maintain,,10.0,True,False,maintain,True
+1471,2026-01-28,fomc,,maintain,29.1,10.0,True,True,maintain,True
+1472,2026-01-28,fomc,,maintain,6.5,10.0,True,False,maintain,True
+1473,2026-01-28,fomc,,maintain,64.0,10.0,True,True,maintain,True
+1474,2026-01-28,fomc,,maintain,,10.0,True,False,maintain,True
+1475,2026-01-30,speaker,Governor Christopher J. Waller,maintain,,10.0,True,False,maintain,True
+1476,2026-01-30,speaker,Vice Chair for Supervision Michelle W. Bowman,maintain,,10.0,True,False,maintain,True
+1477,2026-02-04,speaker,Governor Lisa D. Cook,maintain,,10.0,True,False,maintain,True
+1478,2026-02-06,speaker,Vice Chair Philip N. Jefferson,maintain,80.3,10.0,True,True,maintain,True
+1479,2026-02-16,speaker,Vice Chair for Supervision Michelle W. Bowman,maintain,,30.0,True,False,maintain,True
+1480,2026-02-17,speaker,Governor Michael S. Barr,maintain,5.8,10.0,True,False,maintain,True
+1481,2026-02-19,speaker,Vice Chair for Supervision Michelle W. Bowman,no_rate_signal,,,False,False,uncertain_rate_signal,False
+1482,2026-02-23,speaker,Governor Christopher J. Waller,maintain,,10.0,True,False,maintain,True
+1483,2026-02-24,speaker,Governor Lisa D. Cook,maintain,,20.0,True,False,maintain,True
+1484,2026-02-24,speaker,Governor Christopher J. Waller,maintain,,10.0,True,False,maintain,True
+1485,2026-02-26,speaker,Vice Chair for Supervision Michelle W. Bowman,maintain,,,False,False,uncertain_rate_signal,False
+1486,2026-03-03,speaker,Vice Chair for Supervision Michelle W. Bowman,maintain,,20.0,True,False,maintain,True
+1487,2026-03-12,speaker,Vice Chair for Supervision Michelle W. Bowman,maintain,,10.0,True,False,maintain,True
+1495,2026-03-18,speaker,Chair Jerome H. Powell,maintain,58.6,60.0,False,False,maintain,True
+1494,2026-03-18,speaker,Chair Jerome H. Powell,maintain,1.0,20.0,True,False,maintain,True
+1492,2026-03-18,speaker,Chair Jerome H. Powell,maintain,6.0,10.0,True,False,maintain,True
+1493,2026-03-18,speaker,Chair Jerome H. Powell,maintain,4.3,20.0,True,False,maintain,True
+1490,2026-03-18,fomc,,maintain,6.0,10.0,True,False,maintain,True
+1489,2026-03-18,fomc,,maintain,62.0,10.0,True,True,maintain,True
+1488,2026-03-18,fomc,,maintain,32.3,10.0,True,True,maintain,True
+1491,2026-03-18,fomc,,maintain,,10.0,True,False,maintain,True
+1496,2026-03-20,speaker,Vice Chair for Supervision Michelle W. Bowman,maintain,,20.0,True,False,maintain,True
+1497,2026-03-20,speaker,Governor Christopher J. Waller,maintain,,20.0,True,False,maintain,True
+1498,2026-03-21,speaker,Chair Jerome H. Powell,maintain,,60.0,False,False,maintain,True
+1499,2026-03-24,speaker,Governor Michael S. Barr,maintain,,20.0,True,False,maintain,True
+1500,2026-03-26,speaker,Governor Stephen I. Miran,maintain,,10.0,True,False,maintain,True
+1501,2026-03-26,speaker,"Randall D. Guynn, Director, Division of Supervision and Regulation",no_rate_signal,,10.0,True,False,no_rate_signal,True
+1502,2026-03-26,speaker,Governor Michael S. Barr,maintain,,10.0,True,False,maintain,True
+1503,2026-03-26,speaker,Governor Lisa D. Cook,maintain,,40.0,True,False,maintain,True
+1504,2026-03-26,speaker,Vice Chair Philip N. Jefferson,maintain,,10.0,True,False,maintain,True
+1505,2026-03-30,speaker,Chair Jerome H. Powell,maintain,82.1,10.0,True,True,maintain,True
+1506,2026-03-30,speaker,Chair Jerome H. Powell,maintain,,20.0,True,False,maintain,True
+1508,2026-03-31,speaker,Vice Chair for Supervision Michelle W. Bowman,maintain,46.4,10.0,True,True,maintain,True
+1507,2026-03-31,speaker,Governor Michael S. Barr,no_rate_signal,,20.0,True,False,no_rate_signal,True
+1509,2026-04-07,speaker,Vice Chair Philip N. Jefferson,maintain,,10.0,True,False,maintain,True

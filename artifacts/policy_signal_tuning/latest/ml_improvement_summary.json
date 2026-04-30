@@ -1,0 +1,102 @@
+{
+  "latest_run_id": "20260428T011012Z_b0e52d49",
+  "latest_model_path": "artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib",
+  "claude_feature_cache": "artifacts/policy_signal_tuning/claude_policy_features.csv",
+  "claude_cache_rows": 65,
+  "claude_cache_label_distribution": {
+    "lower": 38,
+    "maintain": 12,
+    "raise": 12,
+    "no_rate_signal": 3
+  },
+  "best_metrics": {
+    "family": "RidgeClassifier",
+    "variant": "alpha=0.3",
+    "feature_mode": "sparse",
+    "round": 1,
+    "max_features": 3000,
+    "n_topics": 3,
+    "svd_components": 12,
+    "chosen_relevance_threshold": 0.55,
+    "chosen_no_signal_threshold": 0.4,
+    "chosen_direction_threshold": 0.3,
+    "chosen_margin_threshold": 0.0,
+    "chosen_lower_override_threshold": 0.35,
+    "chosen_lower_override_gap": 0.25,
+    "relevance_accuracy": 0.9074889867841409,
+    "relevance_f1": 0.9427792915531336,
+    "relevance_precision": 0.9558011049723757,
+    "relevance_recall": 0.9301075268817204,
+    "direction_accuracy": 0.7473118279569892,
+    "direction_f1_macro": 0.6847527472527473,
+    "direction_eval_labels": "lower,maintain",
+    "action_accuracy": 0.6431718061674009,
+    "action_f1_macro": 0.6430021962675969,
+    "action_f1_macro_all_labels": 0.4822516472006977,
+    "action_eval_labels": "no_rate_signal,lower,maintain",
+    "uncertain_rate_signal_rate": 0.08370044052863436,
+    "online_final_accuracy": 0.7,
+    "online_early_by_50_rate": 0.775,
+    "online_before_cue_rate": 0.42857142857142855,
+    "online_median_stable_correct_pct": 15.0,
+    "n_train_docs": 1057,
+    "n_threshold_docs": 226,
+    "n_test_docs": 227,
+    "n_val_docs": 227,
+    "n_test_rate_relevant": 186,
+    "error": "",
+    "run_id": "20260428T011012Z_b0e52d49"
+  },
+  "class_recall": {
+    "lower": 0.5283018867924528,
+    "maintain": 0.7142857142857143,
+    "no_rate_signal": 0.5609756097560976
+  },
+  "previous_structured_best": {
+    "run_id": "20260427T225125Z_7d7745de",
+    "action_f1_macro": 0.5733627715102037,
+    "direction_f1_macro": 0.5318230852211434,
+    "lower_recall": 0.18867924528301888,
+    "uncertain_rate_signal_rate": 0.1277533039647577,
+    "online_early_by_50_rate": 0.925
+  },
+  "delta_vs_previous_structured_best": {
+    "action_f1_macro": 0.06963942475739326,
+    "direction_f1_macro": 0.15292966203160385,
+    "lower_recall": 0.33962264150943394,
+    "uncertain_rate_signal_rate": -0.04405286343612334,
+    "online_early_by_50_rate": -0.15000000000000002
+  },
+  "confusion_matrix": {
+    "lower": {
+      "lower": 28,
+      "maintain": 28,
+      "no_rate_signal": 2
+    },
+    "maintain": {
+      "lower": 20,
+      "maintain": 95,
+      "no_rate_signal": 6
+    },
+    "no_rate_signal": {
+      "lower": 2,
+      "maintain": 2,
+      "no_rate_signal": 23
+    },
+    "raise": {
+      "lower": 0,
+      "maintain": 2,
+      "no_rate_signal": 0
+    },
+    "uncertain_rate_signal": {
+      "lower": 3,
+      "maintain": 6,
+      "no_rate_signal": 10
+    }
+  },
+  "notes": [
+    "Claude was used as a cached feature/teacher source through artifacts/policy_signal_tuning/claude_policy_features.csv.",
+    "The saved sklearn artifact remains fast at inference and does not call Claude unless new cache rows are explicitly built.",
+    "Static lower-class recall improved substantially, but online recent-slice accuracy fell because the model now calls lower more often instead of defaulting to maintain."
+  ]
+}

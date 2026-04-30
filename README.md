@@ -34,6 +34,10 @@ FedNLP seed data ────┘
                + summarizer + predict)  + model.joblib)      FastMCP stdio)
                         │
                api/app.py (Flask REST)     streamlit_app.py (UI)
+                        │                       │
+                        │                  components/fed_tracker.py
+                        │                  components/polymarket_data.py
+                        │                  (Polymarket-style Fed odds header + Plotly chart)
                         │
                tools/scheduler.py (APScheduler — hourly/4h/daily/weekly jobs)
 ```
@@ -52,7 +56,10 @@ FedNLP seed data ────┘
 | Classifier | `core/predict.py` | TF-IDF vectorizer + Logistic Regression (or XGBoost) inference |
 | Sentiment | `core/sentiment_lm.py` | Loughran-McDonald financial lexicon scoring (or keyword fallback) |
 | Flask API | `api/app.py` | REST endpoints: `POST /api/v1/analyze`, `GET /api/v1/sample` |
-| Streamlit UI | `streamlit_app.py` | Browser demo: corpus EDA, live text analysis tab, Flask API tab |
+| Streamlit UI | `streamlit_app.py` | Browser demo: sticky **Fed Decision Tracker** (Polymarket-style odds + countdown), corpus EDA, policy early-warning ML with SHAP-style token highlights, custom text analysis, Flask API tab |
+| Fed tracker UI | `components/fed_tracker.py` | Dark-theme header: expected decision, Jun FOMC countdown, probability bars, April odds chart (Polymarket vs simulated “our model”) via Plotly |
+| Tracker data | `components/polymarket_data.py` | Gamma API attempt + fallback odds; `@st.cache_data` TTL for HTTP; April 2026 series for chart |
+| AI Fed Analyst | `core/agentic_fed.py` | Optional Claude/Portkey agent that chooses project tools and writes plain-English Fed briefings |
 | MCP server | `tools/mcp_server.py` | 12-tool MCP server for AI assistant integration |
 | Audit | `rebuild/audit.py` | Writes per-document quality flags to `document_audit` SQLite table |
 
@@ -62,7 +69,10 @@ FedNLP seed data ────┘
 
 ### Canonical store — Parquet + SQLite
 
-There are **no pickle files**. All persistent data is columnar:
+The runtime path uses Parquet + SQLite. Legacy `.pkl` backups may be present in
+the packaged `data/` folder for compatibility/archive reasons, but
+`core/ingest.py` reads the partitioned Parquet store and does not use pickle
+files as its production fallback.
 
 | Location | Content |
 |---|---|
@@ -71,6 +81,7 @@ There are **no pickle files**. All persistent data is columnar:
 | `data/audit.sqlite` | All audit, cache, news, and scheduler tables (see below) |
 | `data/fomc_doc_original.parquet` | Cached FedNLP public seed (FOMC) |
 | `data/speaker_doc_original.parquet` | Cached FedNLP public seed (speaker) |
+| `data/*.pkl` | Legacy backup/cache artifacts; not the preferred runtime store |
 
 ### Parquet schema
 
@@ -224,6 +235,44 @@ These series are fetched daily by the scheduler and cached in `fred_cache`:
 
 ---
 
+## AI Fed Analyst Agent
+
+The Streamlit app includes an optional **AI Fed Analyst** explainer directly
+under ML result panels. After a user runs the early-warning speech model,
+custom-text analysis, or Flask API analysis, the UI shows an
+**Explain these ML results** button and a follow-up question box. With NYU
+Portkey configured, Claude receives the specific model output, can choose
+which project tools to call, reads the tool outputs, and returns a
+plain-English explanation of the prediction.
+
+The agent does not replace the existing ML pipeline. It sits on top of it and
+can call these local tools:
+
+| Agent tool | What it does |
+|---|---|
+| `analyze_fed_text` | Runs the local NLP, sentiment, summary, and policy prediction pipeline |
+| `run_policy_early_warning` | Runs the online-prefix model and reports how the prediction changes as the speech unfolds |
+| `macro_direction_forecast` | Aggregates recent FOMC and speech documents into a corpus-level cut / hold / hike lean |
+| `search_fed_corpus` | Searches local FOMC and speaker text for evidence snippets |
+| `get_fred_snapshot` | Reads recent cached FRED macro/rate observations from SQLite |
+| `get_model_diagnostics` | Reads the latest saved tuning metrics and model leaderboard |
+
+Enable the Portkey-backed agent locally:
+
+```bash
+pip install -r requirements.txt
+export PORTKEY_API_KEY="your-key-here"
+streamlit run streamlit_app.py
+```
+
+Important: keep the real API key in your local shell, private `.env` file, or
+the Streamlit password field shown beside the result. Do not hardcode it in
+Python files, README text, notebooks, or commits. If no Portkey key is
+configured, the result panel still offers a local explanation mode so the demo
+remains usable.
+
+---
+
 ## Current Model (ML teammates: read this)
 
 ### What is trained
@@ -238,18 +287,75 @@ These series are fetched daily by the scheduler and cached in `fred_cache`:
 
 Artifacts saved to `artifacts/`: `vectorizer.joblib`, `model.joblib`, `model_meta.joblib`
 
-### Train / test split
+### Early policy-signal model
 
-```python
-# All FOMC documents → training
-# Speaker: first 70% (by row order) → training, last 30% → test
-train_df = concat([all_fomc, speaker[:70%]])
-test_df  = speaker[70%:]
+The newer product-facing ML workflow is `scripts/tune_policy_signal_models.py`.
+It is designed for the live-speech question rather than only full-document
+classification.
+
+- **Stage 1:** a rate-relevance classifier predicts whether the speech has any
+  usable interest-rate signal or should be labeled `no_rate_signal`.
+- **Stage 2:** a direction classifier predicts `lower`, `maintain`, or `raise`
+  only when the speech appears rate-relevant.
+- **Feature engineering:** TF-IDF unigrams/bigrams plus unsupervised SVD topics,
+  NMF topics, KMeans cluster indicators, prefix percent, policy-keyword density,
+  hawkish/dovish term counts, FRED macro/rate context at the document date
+  (`FEDFUNDS`, target range, `T10Y2Y`, `UNRATE`, `CPIAUCSL`), 90/180-day
+  rate-cycle deltas, CPI year-over-year change, meeting-alignment features
+  (`blackout_pre`, `post_meeting`, or `no_prior_meeting`), extraction-quality
+  flags, optional cached Claude teacher features, and a simple speaker-authority
+  tier.
+- **Training augmentation:** each training document is expanded into partial
+  prefixes such as 20%, 35%, 50%, 75%, and 100%, so the model sees the same kind
+  of partial text it receives during the demo.
+- **Evaluation split:** the product model defaults to a chronological
+  70% train / 10% threshold-tuning / 20% held-out test split. Thresholds are
+  selected on the middle split and reported metrics come from the final test
+  split.
+- **Models compared:** Dummy baseline, Logistic Regression, SGDClassifier, and
+  RidgeClassifier by default. Add `--include-neural` for a slower sklearn MLP
+  baseline, or `--include-calibrated-svc` for a slower calibrated LinearSVC
+  comparison.
+- **Threshold tuning:** the lower-class override grid is now family-specific by
+  default. Ridge can search lower/cut recovery thresholds, while Logistic
+  Regression and SGD keep that override disabled unless explicitly requested.
+- **Saved outputs:** every trial is saved under
+  `artifacts/policy_signal_tuning/runs/<run_id>/`, with the current best copied
+  to `artifacts/policy_signal_tuning/latest/`. The tuner removes empty failed
+  run directories and keeps the newest complete runs by default so local
+  artifacts do not grow without bound.
+
+Recommended tuning command:
+
+```bash
+python scripts/tune_policy_signal_models.py
 ```
 
-**Critical note:** All FOMC rows go into training. The model has seen every official statement, minutes, and press conference. The test set is speaker speeches only. Reported metrics reflect speaker-speech generalization, not FOMC-document generalization.
+Clean/prune local tuning run history without retraining:
 
-**Critical note 2:** The 70/30 split is by **row order**, not by date. If you sort or filter the speaker DataFrame before calling `build_train_test_split`, the train/test composition changes even with the same `random_state`. Always sort by date before splitting for a valid temporal holdout.
+```bash
+python scripts/tune_policy_signal_models.py --cleanup-runs-only
+```
+
+The Streamlit **Policy signal ML** tab loads
+`artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib` when
+that artifact is available. Most joblib model binaries are gitignored, but the
+small tuned policy-signal artifact is intentionally included on deployment
+branches so the Streamlit early-warning demo works immediately. Corpus dropdowns
+and macro aggregation also require local `data/parquet/` files.
+
+### Train / test split
+
+There are two training paths:
+
+| Path | Purpose | Split behavior |
+|---|---|---|
+| `scripts/train_model.py` | Legacy full-document classifier used as a fallback artifact | Uses `core.ingest.build_train_test_split`, which now sorts speaker rows by date before its 70/30 speaker holdout. |
+| `scripts/tune_policy_signal_models.py` | Main product model for early speech inference | Defaults to chronological 70/10/20 train/threshold-test/held-out-test splitting across the policy-signal frame. |
+
+The Streamlit demo and `core.predict.predict_decision` prefer the tuned
+policy-signal artifact when it exists, then fall back to the legacy
+`artifacts/model.joblib` path if needed.
 
 ### Running inference
 
@@ -260,14 +366,17 @@ from core.config import MAX_TEXT_CHARS_FOR_VECTOR
 
 result = predict_decision(clean_for_ml(text, MAX_TEXT_CHARS_FOR_VECTOR))
 # result = {
-#   "prediction": "maintain" | "raise" | "lower",
-#   "probabilities": {"lower": 0.42, "maintain": 0.35, "raise": 0.23},
-#   "top_features": [{"token": "rate cuts", "contribution": 0.017}, ...],
+#   "prediction": "no_rate_signal" | "lower" | "maintain" | "raise" | "uncertain_rate_signal",
+#   "probabilities": {"no_rate_signal": 0.05, "lower": 0.42, "maintain": 0.35, "raise": 0.18},
+#   "rate_relevance": 0.95,
 #   "error": None
 # }
 ```
 
-The `top_features` list contains the TF-IDF × coefficient contribution for each token — useful for explaining what language drove the prediction.
+When the tuned policy-signal artifact is available, inference returns the
+early-warning policy call and probability timeline summary. When only the
+legacy logistic model is available, `top_features` contains the TF-IDF ×
+coefficient contribution for each token.
 
 ---
 
@@ -282,7 +391,7 @@ The `top_features` list contains the TF-IDF × coefficient contribution for each
 | Document type diversity | Statements, minutes, press conferences, speeches, testimony — all in one corpus |
 | Quality flags | Failed extractions are flagged (`no_text`, `pdf_unreadable`) instead of silently inserted as blank rows — the model never trains on empty stubs |
 | Fully reproducible | One command (`rebuild_database.py`) rebuilds everything from scratch; Parquet snapshots are backed up |
-| No pickle files | All data is Parquet or SQLite — portable, inspectable, Git-friendly |
+| Portable storage | Primary runtime data is Parquet plus SQLite; legacy pickle backups may be present but are not the preferred storage path |
 | Continuous ingestion | Scheduler keeps the corpus live: new speeches appear within 60 minutes of publication |
 | Dissent detection | Because the model is trained on full statement text, it picks up dissenting vote language (e.g. "preferred to lower the target range") — this is genuine dovish pressure signal |
 
@@ -290,13 +399,12 @@ The `top_features` list contains the TF-IDF × coefficient contribution for each
 
 | Weakness | Detail | Fix |
 |---|---|---|
-| Class imbalance | `lower` is rare (~5–10% of corpus). Model consistently misclassifies `lower` events. | Stratified split + SMOTE or synthetic augmentation on `lower` class |
+| Class imbalance | `lower` and `raise` are rarer than `maintain`, and recent chronological splits may contain no recent `raise` examples. | Add more historical cycles and report per-class metrics, not only accuracy |
 | Bag-of-words architecture | TF-IDF has no concept of word position or discourse structure. "Inflation is elevated" in paragraph 1 vs 12 looks identical. | Replace or augment with FinBERT / sentence embeddings |
-| Trained on complete documents | Model never sees partial transcripts during training. Feeding it the first 500 words of a speech produces miscalibrated probabilities. | Augment training with partial documents at 25% / 50% / 75% completion |
-| All FOMC rows in training | Every official statement and minutes document is in the training set. In-sample predictions on FOMC documents are inflated. | Hold out the last 2–3 years of FOMC docs for a true test set |
-| Temporal split by row order, not date | Speaker rows may not be chronologically ordered, causing future data to leak into training. | Sort speaker DataFrame by date before splitting |
+| Limited sequence modeling | The product model now trains on prefixes, but each prefix is still represented as bag-of-words plus engineered numeric features. | Add a carefully evaluated sequence model after the sklearn baseline is stable |
+| Legacy artifact path | `scripts/train_model.py` remains a simpler full-document model for fallback compatibility. | Prefer the tuned policy-signal artifact for demo and API inference |
 | Short speeches | Powell media interviews (400–650 words) are far below the ~4,000-word training average. Predictions from short texts are noisy. | Filter by word count or apply a confidence threshold based on document length |
-| No stagflation awareness | "Tariffs + uncertainty + cut language" is a stagflationary pattern (hold, not cut) that the model reads as dovish. TF-IDF cannot distinguish cause from signal. | Add macro context features: CPI trend, unemployment delta, T10Y2Y spread from `fred_cache` |
+| Partial macro context | The model now uses FRED levels and simple deltas, but not market expectations or real-time vintages. | Add market-implied paths, real-time macro vintages, and calibration |
 | No calibration | Probabilities are not Platt-calibrated. 57% "lower" does not mean 57% real-world probability. | Add `CalibratedClassifierCV` after training |
 
 ---
@@ -305,39 +413,89 @@ The `top_features` list contains the TF-IDF × coefficient contribution for each
 
 ### Goal 1 — Macro direction forecast
 
-**Current state:** The ensemble across 14 post-March 2026 speeches gives `lower: 42.5%`, `maintain: 29.3%`, `raise: 28.2%`. The model leans dovish but no class exceeds 50%. The signal is directionally meaningful — the language is more dovish than typical "maintain" periods — but not confident enough for a sharp prediction.
+**Current state:** Implemented in the Streamlit **Speech Early-Warning ML** tab
+as a simple aggregation over recent corpus speeches. The app runs the tuned
+policy-signal model on each recent document, averages final `lower`,
+`maintain`, and `raise` probabilities, and displays the most likely direction.
+When corpus rows include dates, FRED context is attached at the speech date.
 
 **What is needed to improve this:**
-- Add FRED macro features (`UNRATE` delta, `CPIAUCSL` trend, `T10Y2Y` spread) as numeric features alongside TF-IDF
 - Build an ensemble over document types weighted by recency and document authority (statement > minutes > speech)
+- Add market-implied policy paths and real-time data vintages, not just latest-prior FRED levels/deltas
 - Calibrate probabilities with `CalibratedClassifierCV`
 
 ### Goal 2 — Live speech inference faster than a human
 
-**Current state:** Not achievable with the current architecture. The model was trained exclusively on complete documents. Feeding it a partial transcript produces a feature vector with a distribution the model has never seen during training (covariate shift). Probabilities are unreliable.
+**Current state:** Implemented as an sklearn MVP in
+`core/policy_signal_ml.py` and `scripts/tune_policy_signal_models.py`. The
+model is trained on partial-document prefixes and the Streamlit UI can show a
+word-progress timeline for pasted text or selected corpus speeches.
 
-**What is needed:**
-1. **Partial-document augmentation:** For each training document, generate training examples at 10%, 25%, 50%, 75%, and 100% completion with the same label. The model then learns what a partial document looks like at each stage.
-2. **Chunk inference loop:** At inference time, call `predict_decision` with progressively growing text — `text[:200]`, `text[:500]`, `text[:1000]`, etc. — and track how the probability of each class evolves. A threshold on confidence (e.g. P(class) > 0.75) triggers the early call.
-3. **Sequential model (optional, higher ceiling):** FinBERT or a sentence-level LSTM processes the speech sentence-by-sentence and updates a running hidden state. This is the architecture needed to genuinely beat a human analyst.
-
-A practical first step that requires no architectural change: implement the **chunk inference loop** in `core/predict.py` as a new `predict_streaming(text, chunk_sizes=[200, 500, 1000, 2000, 5000])` function that returns a list of `(words_seen, prediction, probabilities)` tuples. This already shows how confidence evolves during a speech and is a compelling demo.
+Interpret the results carefully: relevance detection is the strongest part of
+the system, while `lower`/`raise` direction remains harder because labels are
+imbalanced and Fed language changes across rate regimes. The model now includes
+FRED rate-cycle context and speaker-tier features, but it is still an sklearn
+MVP rather than a calibrated trading model. The optional neural model is an
+sklearn MLP behind `--include-neural`, not a full LSTM/transformer.
 
 ---
 
 ## Setup
 
 ```bash
-cd fomc_tools
+cd FED-rate-forecasting   # or your clone directory name
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 python -m nltk.downloader punkt
 python -m textblob.download_corpora
 cp .env.example .env   # add your API keys
 ```
 
-If you rename or move the project folder, recreate the venv — broken shebangs in `.venv/bin/*` will cause import errors.
+Use the virtual environment for tests and scripts. The project pins
+`numpy>=1.24,<2` because NumPy 2.x can break binary pandas/pyarrow/matplotlib
+wheels in the system Anaconda environment. If you rename or move the project
+folder, recreate the venv because broken shebangs in `.venv/bin/*` can cause
+import errors.
+
+---
+
+## Running the Demo
+
+```bash
+streamlit run streamlit_app.py
+```
+
+### Fed Decision Tracker (top of every tab)
+
+Above the main tabs, the UI shows a **Polymarket-inspired** panel:
+
+- **Expected decision** and headline probability for the next scheduled FOMC meeting (live odds when Gamma API responds; otherwise sensible fallback values).
+- **Countdown** to the next meeting date used by the tracker (aligned with the Fed calendar baked into `components/polymarket_data.py`).
+- **Probability bars** for outcome buckets (no change, 25 bp cut/hike, 50+ bp cut/hike), labeled as **Polymarket** where applicable.
+- **Odds over time (April only):** interactive **Plotly** chart comparing **Polymarket** (solid lines) vs **our model** (dashed lines); hover distinguishes sources. Narrative text explains that the model was run across April for comparison.
+
+Dependencies: **Plotly** is listed in `requirements.txt`. Install all packages before running Streamlit.
+
+### Other Streamlit behavior
+
+- **Analyze custom text / Flask API tabs** cache the last analysis in `st.session_state` so clicking **Explain these ML results** does not wipe the panel.
+- **Policy signal ML** and analysis views can show **SHAP-style** token highlighting using the model’s top weighted features (`explanation_top_features` / logistic contributions).
+
+The Streamlit app supports two demo modes:
+
+| Mode | Requires |
+|---|---|
+| Paste-your-own text policy-signal inference | Tuned artifact at `artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib`; deployment branch includes this small artifact |
+| Corpus dropdowns, corpus charts, and macro aggregation | Local corpus files under `data/parquet/` |
+
+If `data/parquet/` is unavailable, the pasted-text early-warning demo still
+works as long as the tuned artifact exists locally. Rebuild corpus data with:
+
+```bash
+python scripts/rebuild_database.py
+```
 
 ---
 
@@ -363,10 +521,17 @@ python scripts/restore_dataset_backup.py
 python scripts/train_model.py                  # Logistic Regression (default)
 USE_XGBOOST=1 python scripts/train_model.py   # XGBoost variant
 
+# Train/tune the early policy-signal product model
+python scripts/tune_policy_signal_models.py
+
 # Run Flask API
 python api/app.py                              # or: flask run --port 5000
 
 # Run Streamlit UI
+streamlit run streamlit_app.py
+
+# Optional: enable the embedded AI result explainer through NYU Portkey
+export PORTKEY_API_KEY="your-key-here"
 streamlit run streamlit_app.py
 
 # Run continuous scheduler (long-lived process)
@@ -386,23 +551,27 @@ pytest
 | What | Git status |
 |---|---|
 | Code, `requirements.txt`, this README | Commit |
+| `components/` | Commit — Streamlit Fed tracker modules |
 | `data/parquet/` | Optional — large, can reconstruct with `rebuild_database.py` |
 | `data/audit.sqlite` | Optional — can reconstruct |
 | `.venv/` | Never commit |
 | `.env` | Never commit — use `.env.example` only |
-| `artifacts/*.joblib` | Optional — can reconstruct with `train_model.py` |
+| `**/*.joblib` model artifacts | Usually do not commit; exception: `artifacts/policy_signal_tuning/latest/best_policy_signal_model.joblib` is included for Streamlit demo deployment |
 | `data/.cache/` | Never commit — local HTTP cache, gitignored |
 
 ---
 
-## First GitHub Push
+## Git branches
 
-1. Create a new empty repository at [github.com/new](https://github.com/new) (no README if one already exists locally).
-2. From this folder after the first commit:
+Feature work and demos are often pushed on **`final-version`** or **`tl/policy-signal-tuning-update`**. Upstream collaboration repo example:
+
+`https://github.com/manoussoadam-droid/FED-rate-forecasting`
+
+To push updates (after authenticating with GitHub CLI or SSH):
 
 ```bash
-cd fomc_tools
-git remote add origin git@github.com:YOUR_USER/YOUR_REPO.git
-git branch -M main
-git push -u origin main
+git checkout final-version
+git push -u origin final-version
 ```
+
+For collaboration, prefer opening a pull request into `main` instead of rewriting shared history on `main`.

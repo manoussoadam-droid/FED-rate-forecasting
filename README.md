@@ -34,6 +34,10 @@ FedNLP seed data ────┘
                + summarizer + predict)  + model.joblib)      FastMCP stdio)
                         │
                api/app.py (Flask REST)     streamlit_app.py (UI)
+                        │                       │
+                        │                  components/fed_tracker.py
+                        │                  components/polymarket_data.py
+                        │                  (Polymarket-style Fed odds header + Plotly chart)
                         │
                tools/scheduler.py (APScheduler — hourly/4h/daily/weekly jobs)
 ```
@@ -52,7 +56,9 @@ FedNLP seed data ────┘
 | Classifier | `core/predict.py` | TF-IDF vectorizer + Logistic Regression (or XGBoost) inference |
 | Sentiment | `core/sentiment_lm.py` | Loughran-McDonald financial lexicon scoring (or keyword fallback) |
 | Flask API | `api/app.py` | REST endpoints: `POST /api/v1/analyze`, `GET /api/v1/sample` |
-| Streamlit UI | `streamlit_app.py` | Browser demo: corpus EDA, live text analysis tab, Flask API tab |
+| Streamlit UI | `streamlit_app.py` | Browser demo: sticky **Fed Decision Tracker** (Polymarket-style odds + countdown), corpus EDA, policy early-warning ML with SHAP-style token highlights, custom text analysis, Flask API tab |
+| Fed tracker UI | `components/fed_tracker.py` | Dark-theme header: expected decision, Jun FOMC countdown, probability bars, April odds chart (Polymarket vs simulated “our model”) via Plotly |
+| Tracker data | `components/polymarket_data.py` | Gamma API attempt + fallback odds; `@st.cache_data` TTL for HTTP; April 2026 series for chart |
 | AI Fed Analyst | `core/agentic_fed.py` | Optional Claude/Portkey agent that chooses project tools and writes plain-English Fed briefings |
 | MCP server | `tools/mcp_server.py` | 12-tool MCP server for AI assistant integration |
 | Audit | `rebuild/audit.py` | Writes per-document quality flags to `document_audit` SQLite table |
@@ -437,7 +443,7 @@ sklearn MLP behind `--include-neural`, not a full LSTM/transformer.
 ## Setup
 
 ```bash
-cd FED-rate-forecasting-main
+cd FED-rate-forecasting   # or your clone directory name
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -460,6 +466,22 @@ import errors.
 ```bash
 streamlit run streamlit_app.py
 ```
+
+### Fed Decision Tracker (top of every tab)
+
+Above the main tabs, the UI shows a **Polymarket-inspired** panel:
+
+- **Expected decision** and headline probability for the next scheduled FOMC meeting (live odds when Gamma API responds; otherwise sensible fallback values).
+- **Countdown** to the next meeting date used by the tracker (aligned with the Fed calendar baked into `components/polymarket_data.py`).
+- **Probability bars** for outcome buckets (no change, 25 bp cut/hike, 50+ bp cut/hike), labeled as **Polymarket** where applicable.
+- **Odds over time (April only):** interactive **Plotly** chart comparing **Polymarket** (solid lines) vs **our model** (dashed lines); hover distinguishes sources. Narrative text explains that the model was run across April for comparison.
+
+Dependencies: **Plotly** is listed in `requirements.txt`. Install all packages before running Streamlit.
+
+### Other Streamlit behavior
+
+- **Analyze custom text / Flask API tabs** cache the last analysis in `st.session_state` so clicking **Explain these ML results** does not wipe the panel.
+- **Policy signal ML** and analysis views can show **SHAP-style** token highlighting using the model’s top weighted features (`explanation_top_features` / logistic contributions).
 
 The Streamlit app supports two demo modes:
 
@@ -529,6 +551,7 @@ pytest
 | What | Git status |
 |---|---|
 | Code, `requirements.txt`, this README | Commit |
+| `components/` | Commit — Streamlit Fed tracker modules |
 | `data/parquet/` | Optional — large, can reconstruct with `rebuild_database.py` |
 | `data/audit.sqlite` | Optional — can reconstruct |
 | `.venv/` | Never commit |
@@ -538,16 +561,17 @@ pytest
 
 ---
 
-## First GitHub Push
+## Git branches
 
-1. Create or choose the target repository.
-2. From this repository root after the first commit:
+Feature work and demos are often pushed on **`final-version`** or **`tl/policy-signal-tuning-update`**. Upstream collaboration repo example:
+
+`https://github.com/manoussoadam-droid/FED-rate-forecasting`
+
+To push updates (after authenticating with GitHub CLI or SSH):
 
 ```bash
-git remote add origin git@github.com:YOUR_USER/YOUR_REPO.git
-git switch -c tl/policy-signal-tuning-update
-git push -u origin tl/policy-signal-tuning-update
+git checkout final-version
+git push -u origin final-version
 ```
 
-For a collaboration repository, open a pull request from the pushed branch into
-`main` rather than force-pushing directly to `main`.
+For collaboration, prefer opening a pull request into `main` instead of rewriting shared history on `main`.

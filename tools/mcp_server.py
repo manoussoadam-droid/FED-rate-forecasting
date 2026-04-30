@@ -91,8 +91,7 @@ def trigger_scrape_fed(
     Returns a JSON summary: {checked, new_speeches, new_fomc_docs, errors}.
     """
     import hashlib
-    import sqlite3
-    from scraping.fed_official import FedHttpSession, SPEECHES_JSON, FOMC_CALENDAR_URL
+    from scraping.fed_official import FedHttpSession, fetch_speeches_metadata
 
     session = FedHttpSession()
     result: dict[str, Any] = {
@@ -105,10 +104,7 @@ def trigger_scrape_fed(
     if check_speeches:
         result["checked"].append("speeches_json")
         try:
-            resp = session.get(SPEECHES_JSON, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-            speeches = data if isinstance(data, list) else data.get("speeches", [])
+            speeches = fetch_speeches_metadata(session)
             feed_hash = hashlib.sha256(
                 json.dumps(speeches, sort_keys=True).encode()
             ).hexdigest()[:16]

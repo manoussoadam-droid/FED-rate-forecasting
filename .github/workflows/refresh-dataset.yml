@@ -89,6 +89,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Issue creation fails if the label does not exist yet — create idempotently first.
+          gh label create data-quality \
+            --color "0366d6" \
+            --description "Fed NLP pipeline — completeness / data-quality alerts from CI" \
+            --repo "${{ github.repository }}" \
+            2>/dev/null || true
           TITLE="FedNLP completeness audit failed $(date -u +%Y-%m-%d)"
           BODY_FILE=issue_body.md
           {
@@ -99,6 +105,7 @@ jobs:
             echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } > "$BODY_FILE"
           gh issue create \
+            --repo "${{ github.repository }}" \
             --title "$TITLE" \
             --body-file "$BODY_FILE" \
             --label data-quality

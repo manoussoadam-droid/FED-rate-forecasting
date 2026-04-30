@@ -59,13 +59,10 @@ def job_check_fed_speeches() -> None:
         import hashlib
         import json
         import sqlite3
-        from scraping.fed_official import FedHttpSession, SPEECHES_JSON
+        from scraping.fed_official import FedHttpSession, fetch_speeches_metadata
 
         session = FedHttpSession()
-        resp = session.get(SPEECHES_JSON, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        speeches = data if isinstance(data, list) else data.get("speeches", [])
+        speeches = fetch_speeches_metadata(session)
         feed_hash = hashlib.sha256(
             json.dumps(speeches, sort_keys=True).encode()
         ).hexdigest()

@@ -49,33 +49,31 @@ from core.policy_signal_ml import (
     timeline_for_text,
     weak_action_label,
 )
+from components.fed_tracker import render_fed_tracker
 
 st.set_page_config(page_title="Fed Speech Early-Warning Dashboard", layout="wide")
+
+# Sticky header CSS for Fed tracker
+st.markdown("""
+<style>
+div[data-testid="stVerticalBlock"] div:has(div.fed-tracker-sticky) {
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    background-color: var(--background-color);
+    padding-bottom: 1rem;
+}
+</style>
+""", unsafe_allow_html=True)
+# Sticky Fed Tracker (visible on all tabs)
+render_fed_tracker()
+st.markdown('<div class="fed-tracker-sticky"/>', unsafe_allow_html=True)
+st.markdown("---")
+
 st.title("Fed Speech Early-Warning Dashboard")
 st.caption(
     "Select a Fed speech, let the model read it in chunks, and see how early it can infer "
     "whether the text points to a rate cut, a hold, a hike, or no clear rate signal."
-)
-
-st.markdown(
-    """
-    <div style="border:1px solid #d9e2ec; border-radius:18px; padding:1rem 1.1rem; background:#f8fafc;">
-      <div style="font-size:1.05rem; font-weight:750; margin-bottom:.35rem;">What this tool does</div>
-      <div style="font-size:.98rem; line-height:1.45;">
-        The Federal Reserve controls short-term interest rates. Higher rates usually slow borrowing and inflation;
-        lower rates usually stimulate the economy. This tool reads Fed communications and asks:
-        <b>does this text suggest rates are more likely to be cut, held steady, or hiked?</b>
-      </div>
-      <div style="display:flex; gap:.6rem; flex-wrap:wrap; margin-top:.8rem;">
-        <div style="padding:.65rem .8rem; background:white; border-radius:12px; border:1px solid #e5e7eb;">Fed speech or statement</div>
-        <div style="align-self:center; font-weight:800;">→</div>
-        <div style="padding:.65rem .8rem; background:white; border-radius:12px; border:1px solid #e5e7eb;">NLP + macro context</div>
-        <div style="align-self:center; font-weight:800;">→</div>
-        <div style="padding:.65rem .8rem; background:white; border-radius:12px; border:1px solid #e5e7eb;">Plain-English rate signal</div>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
 )
 
 tab_policy, tab_data, tab_analyze, tab_api = st.tabs(
@@ -467,6 +465,86 @@ def _display_probability_series(probs: pd.Series | dict[str, float]) -> pd.Serie
     return s.rename(index=PROBABILITY_LABELS)
 
 
+def _render_shap_highlighted_text(text: str, top_features: list[dict[str, Any]], max_words: int = 800) -> None:
+    """Render text with SHAP-style highlighting based on model feature contributions.
+    
+    Highlights important words:
+    - Green background: positive contribution (pushes toward predicted class)
+    - Red background: negative contribution (pushes away from predicted class)
+    - Intensity scales with absolute contribution magnitude
+    """
+    if not top_features or not text.strip():
+        st.markdown(f'<div style="background:#f8f9fa;padding:1rem;border-radius:8px;max-height:400px;overflow-y:auto;line-height:1.6;white-space:pre-wrap;font-family:system-ui,-apple-system,sans-serif;font-size:0.95rem;">{text[:5000]}</div>', unsafe_allow_html=True)
+        return
+    
+    # Build token → contribution map (case-insensitive)
+    token_contrib = {}
+    max_abs = 0.0
+    for feat in top_features:
+        token = str(feat.get("token", "")).lower()
+        contrib = float(feat.get("contribution", 0))
+        if token and contrib != 0:
+            token_contrib[token] = contrib
+            max_abs = max(max_abs, abs(contrib))
+    
+    if not token_contrib or max_abs == 0:
+        st.markdown(f'<div style="background:#f8f9fa;padding:1rem;border-radius:8px;max-height:400px;overflow-y:auto;line-height:1.6;white-space:pre-wrap;font-family:system-ui,-apple-system,sans-serif;font-size:0.95rem;">{text[:5000]}</div>', unsafe_allow_html=True)
+        return
+    
+    # Tokenize text (simple whitespace + punctuation split)
+    import re
+    words = re.findall(r'\S+', text[:max_words * 8])  # rough char estimate
+    if len(words) > max_words:
+        words = words[:max_words]
+        truncated = True
+    else:
+        truncated = False
+    
+    # Build highlighted HTML
+    html_parts = []
+    for word in words:
+        word_clean = re.sub(r'[^\w]', '', word.lower())
+        if word_clean in token_contrib:
+            contrib = token_contrib[word_clean]
+            intensity = abs(contrib) / max_abs
+            # Scale opacity 0.2 to 0.8 based on intensity
+            opacity = 0.2 + (intensity * 0.6)
+            if contrib > 0:
+                # Positive contribution → green
+                color = f"rgba(34, 197, 94, {opacity})"
+            else:
+                # Negative contribution → red
+                color = f"rgba(239, 68, 68, {opacity})"
+            html_parts.append(f'<span style="background:{color};padding:2px 4px;border-radius:3px;margin:0 2px;">{word}</span>')
+        else:
+            html_parts.append(word)
+    
+    highlighted = " ".join(html_parts)
+    if truncated:
+        highlighted += ' <span style="color:#9ca3af;font-style:italic;">... (text truncated for display)</span>'
+    
+    st.markdown(
+        f'<div style="background:#f8f9fa;padding:1.2rem;border-radius:8px;max-height:450px;overflow-y:auto;line-height:1.7;font-family:system-ui,-apple-system,sans-serif;font-size:0.95rem;">'
+        f'<div style="margin-bottom:0.5rem;font-size:0.85rem;color:#6b7280;font-weight:500;">📊 SHAP-style feature importance: <span style="background:rgba(34,197,94,0.5);padding:2px 6px;border-radius:3px;margin:0 4px;">green = positive</span> <span style="background:rgba(239,68,68,0.5);padding:2px 6px;border-radius:3px;">red = negative</span></div>'
+        f'{highlighted}'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+
+def _calculate_text_area_height(text: str, min_height: int = 120, max_height: int = 600) -> int:
+    """Calculate appropriate text area height based on content."""
+    if not text:
+        return min_height
+    line_count = text.count('\n') + 1
+    # Estimate wrapped lines (assume ~80 chars per line)
+    char_count = len(text)
+    estimated_wrapped_lines = max(line_count, char_count // 80)
+    # ~20px per line + padding
+    calculated = estimated_wrapped_lines * 22 + 40
+    return max(min_height, min(calculated, max_height))
+
+
 def _render_policy_timeline(
     artifact,
     text: str,
@@ -500,6 +578,15 @@ def _render_policy_timeline(
     r3.metric("Final speech progress", "100%")
     _render_rate_relevance_scanner(text, final.get("p_rate_relevant"), final.get("p_no_rate_signal"))
     _render_explanation(pred_label, text, final["confidence"], final["p_rate_relevant"])
+
+    # Get top features for SHAP highlighting
+    from core.analysis_pipeline import analyze_text
+    analysis_result = analyze_text(text)
+    top_features = analysis_result.get("explanation_top_features") or []
+    if top_features:
+        st.markdown("### 📝 Speech with model feature importance")
+        st.caption("Words highlighted by their contribution to the prediction (brighter = stronger influence)")
+        _render_shap_highlighted_text(text, top_features, max_words=700)
 
     if target:
         if pd.notna(stable_pct):
@@ -1113,8 +1200,9 @@ with tab_policy:
         if input_mode == "Paste your own text":
             custom_text = st.text_area(
                 "Paste a Fed speech, statement, press conference excerpt, or hypothetical policy text",
-                height=260,
+                height=_calculate_text_area_height(st.session_state.get("policy_paste_text", ""), min_height=260),
                 placeholder="Paste Fed communication text here...",
+                key="policy_paste_text",
             )
             if st.button("Run early-warning model on pasted text", type="primary"):
                 if not custom_text.strip():
@@ -1168,7 +1256,8 @@ with tab_policy:
                 meta_cols[2].metric("Speaker", str(row.get("participant", "unknown"))[:28])
                 meta_cols[3].metric("Domain", str(row.get("domain", "unknown")).replace("www.", "")[:28])
                 with st.expander("Speech preview", expanded=True):
-                    st.text_area("First part of selected speech", str(row["document"])[:2500], height=220, label_visibility="collapsed")
+                    preview_height = _calculate_text_area_height(str(row["document"])[:2500], min_height=220, max_height=400)
+                    st.text_area("First part of selected speech", str(row["document"])[:2500], height=preview_height, label_visibility="collapsed", key=f"corpus_preview_{selected}")
 
                 if st.button("Run model on selected speech", type="primary"):
                     context = _context_for_speech_rows(pd.DataFrame([row]))
@@ -1283,77 +1372,100 @@ with tab_policy:
 with tab_analyze:
     st.subheader("Analyze any Fed text")
     st.write("Paste a speech excerpt, statement, or hypothetical paragraph. The result starts with a plain-English verdict; technical details are hidden below.")
-    text = st.text_area("Paste text", height=240, placeholder="FOMC or speech excerpt…")
+    text_input_key = "analyze_text_input"
+    text = st.text_area(
+        "Paste text",
+        height=_calculate_text_area_height(st.session_state.get(text_input_key, ""), min_height=240),
+        placeholder="FOMC or speech excerpt…",
+        key=text_input_key,
+    )
+    _ANALYZE_CACHE = "analyze_tab_last_result"
     if st.button("Run local analysis"):
         if text.strip():
             with st.spinner("Analyzing…"):
-                out = analyze_text(text)
-            st.subheader("Analysis result")
-            probs = out.get("prediction_proba") or {}
-            pred_label = out.get("prediction_decision") or "unavailable"
-            confidence = out.get("prediction_confidence")
-            if confidence is None:
-                confidence = max(probs.values()) if isinstance(probs, dict) and probs else None
-            tb = out.get("sentiment_textblob") or {}
-            fin = out.get("sentiment_financial") or {}
-            st.markdown(f"## {_label_info(pred_label)['sentence']}")
-            _render_prediction_badge(pred_label)
-            if confidence is not None:
-                _render_confidence_gauge(confidence)
-            p1, p2, p3, p4 = st.columns(4)
-            p1.metric("Word count", f"{int(out.get('word_count', len(text.split()))):,}")
-            p2.metric("Policy/rate relevance", _confidence_band(out.get("prediction_rate_relevance", 0)))
-            p3.metric("General tone", "Positive" if float(tb.get("polarity", 0)) > 0.05 else "Negative" if float(tb.get("polarity", 0)) < -0.05 else "Neutral")
-            p4.metric("Financial tone", "Hawkish-ish" if float(fin.get("financial_sentiment_score", 0)) < -0.02 else "Dovish-ish" if float(fin.get("financial_sentiment_score", 0)) > 0.02 else "Mixed")
-            if out.get("prediction_model_type"):
-                st.caption(f"Model source: `{out.get('prediction_model_type')}`")
-
-            no_signal_probability = probs.get("no_rate_signal") if isinstance(probs, dict) else None
-            _render_rate_relevance_scanner(text, out.get("prediction_rate_relevance"), no_signal_probability)
-            _render_explanation(pred_label, text, confidence or 0, out.get("prediction_rate_relevance"))
-
-            if isinstance(probs, dict) and probs:
-                st.markdown("### Probability breakdown")
-                st.bar_chart(_display_probability_series(probs))
-
-            st.markdown("### Hawkish vs. dovish language found")
-            _render_tone_breakdown(text)
-
-            top_features = out.get("explanation_top_features") or []
-            if top_features:
-                feat_df = pd.DataFrame(top_features)
-                if {"token", "contribution"}.issubset(feat_df.columns):
-                    st.markdown("### Technical token contributions")
-                    st.bar_chart(feat_df.set_index("token")["contribution"])
-                with st.expander("Top feature table", expanded=False):
-                    st.dataframe(feat_df, use_container_width=True)
-
-            if out.get("summary_textrank"):
-                st.markdown("**Extractive summary**")
-                st.write(out.get("summary_textrank"))
-
-            if out.get("wordcloud_png_base64"):
-                st.markdown("### Word cloud")
-                st.image(base64.b64decode(out["wordcloud_png_base64"]), use_container_width=True)
-            with st.expander("Under the hood: raw API-style output", expanded=False):
-                st.json(out)
-
-            hawk, dove = _tone_counts(text)
-            agent_out = {k: v for k, v in out.items() if k != "wordcloud_png_base64"}
-            agent_out.update(
-                {
-                    "result_type": "custom_text_analysis",
-                    "final_prediction": pred_label,
-                    "confidence": confidence or 0,
-                    "rate_relevance": out.get("prediction_rate_relevance", 0),
-                    "hawkish_phrase_hits": sum(hawk.values()),
-                    "dovish_phrase_hits": sum(dove.values()),
-                    "probabilities": probs,
-                }
-            )
-            _render_result_agent_chat("analyze_result", agent_out, text)
+                st.session_state[_ANALYZE_CACHE] = {"text": text.strip(), "out": analyze_text(text)}
         else:
             st.warning("Enter some text.")
+
+    _cached = st.session_state.get(_ANALYZE_CACHE)
+    _show_analyze = bool(
+        _cached
+        and _cached.get("text") == text.strip()
+        and text.strip()
+    )
+    if _show_analyze:
+        out = _cached["out"]
+        st.subheader("Analysis result")
+        probs = out.get("prediction_proba") or {}
+        pred_label = out.get("prediction_decision") or "unavailable"
+        confidence = out.get("prediction_confidence")
+        if confidence is None:
+            confidence = max(probs.values()) if isinstance(probs, dict) and probs else None
+        tb = out.get("sentiment_textblob") or {}
+        fin = out.get("sentiment_financial") or {}
+        st.markdown(f"## {_label_info(pred_label)['sentence']}")
+        _render_prediction_badge(pred_label)
+        if confidence is not None:
+            _render_confidence_gauge(confidence)
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Word count", f"{int(out.get('word_count', len(text.split()))):,}")
+        p2.metric("Policy/rate relevance", _confidence_band(out.get("prediction_rate_relevance", 0)))
+        p3.metric("General tone", "Positive" if float(tb.get("polarity", 0)) > 0.05 else "Negative" if float(tb.get("polarity", 0)) < -0.05 else "Neutral")
+        p4.metric("Financial tone", "Hawkish-ish" if float(fin.get("financial_sentiment_score", 0)) < -0.02 else "Dovish-ish" if float(fin.get("financial_sentiment_score", 0)) > 0.02 else "Mixed")
+        if out.get("prediction_model_type"):
+            st.caption(f"Model source: `{out.get('prediction_model_type')}`")
+
+        no_signal_probability = probs.get("no_rate_signal") if isinstance(probs, dict) else None
+        _render_rate_relevance_scanner(text, out.get("prediction_rate_relevance"), no_signal_probability)
+        _render_explanation(pred_label, text, confidence or 0, out.get("prediction_rate_relevance"))
+
+        # SHAP-style highlighted text preview
+        top_features = out.get("explanation_top_features") or []
+        if top_features:
+            st.markdown("### 📝 Speech analysis with feature importance")
+            st.caption("Words highlighted by their contribution to the model's prediction (brighter = stronger influence)")
+            _render_shap_highlighted_text(text, top_features, max_words=600)
+
+        if isinstance(probs, dict) and probs:
+            st.markdown("### Probability breakdown")
+            st.bar_chart(_display_probability_series(probs))
+
+        st.markdown("### Hawkish vs. dovish language found")
+        _render_tone_breakdown(text)
+
+        top_features = out.get("explanation_top_features") or []
+        if top_features:
+            feat_df = pd.DataFrame(top_features)
+            if {"token", "contribution"}.issubset(feat_df.columns):
+                st.markdown("### Technical token contributions")
+                st.bar_chart(feat_df.set_index("token")["contribution"])
+            with st.expander("Top feature table", expanded=False):
+                st.dataframe(feat_df, use_container_width=True)
+
+        if out.get("summary_textrank"):
+            st.markdown("**Extractive summary**")
+            st.write(out.get("summary_textrank"))
+
+        if out.get("wordcloud_png_base64"):
+            st.markdown("### Word cloud")
+            st.image(base64.b64decode(out["wordcloud_png_base64"]), use_container_width=True)
+        with st.expander("Under the hood: raw API-style output", expanded=False):
+            st.json(out)
+
+        hawk, dove = _tone_counts(text)
+        agent_out = {k: v for k, v in out.items() if k != "wordcloud_png_base64"}
+        agent_out.update(
+            {
+                "result_type": "custom_text_analysis",
+                "final_prediction": pred_label,
+                "confidence": confidence or 0,
+                "rate_relevance": out.get("prediction_rate_relevance", 0),
+                "hawkish_phrase_hits": sum(hawk.values()),
+                "dovish_phrase_hits": sum(dove.values()),
+                "probabilities": probs,
+            }
+        )
+        _render_result_agent_chat("analyze_result", agent_out, text)
 
 with tab_api:
     base = st.text_input("Flask base URL", value="http://127.0.0.1:5000")
@@ -1364,47 +1476,80 @@ with tab_api:
         except Exception as e:
             st.error(str(e))
     st.divider()
-    api_text = st.text_area("Text for API", height=120, key="api_text")
+    api_text_key = "api_text_input"
+    api_text = st.text_area(
+        "Text for API",
+        height=_calculate_text_area_height(st.session_state.get(api_text_key, ""), min_height=120),
+        key=api_text_key,
+    )
+    _API_CACHE = "api_tab_last_analyze"
     if st.button("POST /api/v1/analyze"):
         try:
+            base_norm = base.rstrip("/")
             r = requests.post(
-                f"{base.rstrip('/')}/api/v1/analyze",
+                f"{base_norm}/api/v1/analyze",
                 json={"text": api_text},
                 timeout=120,
             )
             payload = r.json() if r.ok else {"status": r.status_code, "body": r.text}
             if r.ok:
-                pred_label = payload.get("prediction_decision") or "unavailable"
-                confidence = payload.get("prediction_confidence")
-                st.markdown(f"## {_label_info(pred_label)['sentence']}")
-                _render_prediction_badge(pred_label, prefix="API verdict")
-                if confidence is not None:
-                    _render_confidence_gauge(confidence)
-                no_signal_probability = (
-                    payload.get("prediction_proba", {}).get("no_rate_signal")
-                    if isinstance(payload.get("prediction_proba"), dict)
-                    else None
-                )
-                _render_rate_relevance_scanner(api_text, payload.get("prediction_rate_relevance"), no_signal_probability)
-                if payload.get("prediction_proba"):
-                    st.bar_chart(_display_probability_series(payload["prediction_proba"]))
-                hawk, dove = _tone_counts(api_text)
-                agent_payload = {k: v for k, v in payload.items() if k != "wordcloud_png_base64"}
-                agent_payload.update(
-                    {
-                        "result_type": "api_text_analysis",
-                        "final_prediction": pred_label,
-                        "confidence": confidence or 0,
-                        "rate_relevance": payload.get("prediction_rate_relevance", 0),
-                        "hawkish_phrase_hits": sum(hawk.values()),
-                        "dovish_phrase_hits": sum(dove.values()),
-                        "probabilities": payload.get("prediction_proba") or {},
-                    }
-                )
-                _render_result_agent_chat("api_result", agent_payload, api_text)
-                with st.expander("Raw API response", expanded=False):
-                    st.json(payload)
-            else:
+                st.session_state[_API_CACHE] = {
+                    "base": base_norm,
+                    "text": api_text,
+                    "payload": payload,
+                }
+            elif _API_CACHE in st.session_state:
+                del st.session_state[_API_CACHE]
+            if not r.ok:
                 st.json(payload)
         except Exception as e:
             st.error(str(e))
+            if _API_CACHE in st.session_state:
+                del st.session_state[_API_CACHE]
+
+    _api_cached = st.session_state.get(_API_CACHE)
+    _show_api = bool(
+        _api_cached
+        and _api_cached.get("text") == api_text
+        and _api_cached.get("base") == base.rstrip("/")
+    )
+    if _show_api:
+        payload = _api_cached["payload"]
+        pred_label = payload.get("prediction_decision") or "unavailable"
+        confidence = payload.get("prediction_confidence")
+        st.markdown(f"## {_label_info(pred_label)['sentence']}")
+        _render_prediction_badge(pred_label, prefix="API verdict")
+        if confidence is not None:
+            _render_confidence_gauge(confidence)
+        no_signal_probability = (
+            payload.get("prediction_proba", {}).get("no_rate_signal")
+            if isinstance(payload.get("prediction_proba"), dict)
+            else None
+        )
+        _render_rate_relevance_scanner(api_text, payload.get("prediction_rate_relevance"), no_signal_probability)
+        
+        # SHAP highlighting for API results
+        api_top_features = payload.get("explanation_top_features") or []
+        if api_top_features:
+            st.markdown("### 📝 API text with feature importance")
+            st.caption("Words highlighted by their contribution to the model's prediction")
+            _render_shap_highlighted_text(api_text, api_top_features, max_words=600)
+        
+        if payload.get("prediction_proba"):
+            st.bar_chart(_display_probability_series(payload["prediction_proba"]))
+        hawk, dove = _tone_counts(api_text)
+        agent_payload = {k: v for k, v in payload.items() if k != "wordcloud_png_base64"}
+        agent_payload.update(
+            {
+                "result_type": "api_text_analysis",
+                "final_prediction": pred_label,
+                "confidence": confidence or 0,
+                "rate_relevance": payload.get("prediction_rate_relevance", 0),
+                "hawkish_phrase_hits": sum(hawk.values()),
+                "dovish_phrase_hits": sum(dove.values()),
+                "probabilities": payload.get("prediction_proba") or {},
+            }
+        )
+        _render_result_agent_chat("api_result", agent_payload, api_text)
+        with st.expander("Raw API response", expanded=False):
+            st.json(payload)

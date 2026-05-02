@@ -50,8 +50,12 @@ from core.policy_signal_ml import (
     weak_action_label,
 )
 from components.fed_tracker import render_fed_tracker
+from components.global_assistant import render_global_assistant
 
 st.set_page_config(page_title="Fed Speech Early-Warning Dashboard", layout="wide")
+
+# Global AI Assistant (sidebar, always accessible)
+render_global_assistant()
 
 # Sticky header CSS for Fed tracker
 st.markdown("""
@@ -79,6 +83,26 @@ st.caption(
 tab_policy, tab_data, tab_analyze, tab_api = st.tabs(
     ["Speech Early-Warning ML", "Corpus & time series", "Analyze custom text", "Call Flask API"]
 )
+
+_FED_OFFICIAL_PUBLICATIONS_URL = "https://www.federalreserve.gov/monetarypolicy/publications.htm"
+
+
+def _render_fed_source_link_hint() -> None:
+    """Italic blurb + link to Fed official publications (for paste-your-own-text flows)."""
+    st.markdown(
+        f"""
+<div style="margin: 1rem 0 1.35rem 0; padding: 0.35rem 0;">
+
+<p style="font-style: italic; margin: 0; line-height: 1.55;">
+Need official Fed wording? Browse the
+<a href="{_FED_OFFICIAL_PUBLICATIONS_URL}" target="_blank" rel="noopener noreferrer">Federal Reserve monetary policy publications</a>
+(statements, FOMC minutes, press conferences, and related releases), open a document, and copy an excerpt here.
+</p>
+
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def _step_words_for_text(text: str) -> int:
@@ -1198,6 +1222,7 @@ with tab_policy:
         )
 
         if input_mode == "Paste your own text":
+            _render_fed_source_link_hint()
             custom_text = st.text_area(
                 "Paste a Fed speech, statement, press conference excerpt, or hypothetical policy text",
                 height=_calculate_text_area_height(st.session_state.get("policy_paste_text", ""), min_height=260),
@@ -1372,6 +1397,7 @@ with tab_policy:
 with tab_analyze:
     st.subheader("Analyze any Fed text")
     st.write("Paste a speech excerpt, statement, or hypothetical paragraph. The result starts with a plain-English verdict; technical details are hidden below.")
+    _render_fed_source_link_hint()
     text_input_key = "analyze_text_input"
     text = st.text_area(
         "Paste text",

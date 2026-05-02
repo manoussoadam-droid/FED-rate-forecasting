@@ -1,5 +1,7 @@
 [server]
 headless = true
+# Avoid watchdog/native fs hooks — reduces segfault risk in some IDE/sandbox terminals
+fileWatcherType = "none"
 
 [browser]
 gatherUsageStats = false

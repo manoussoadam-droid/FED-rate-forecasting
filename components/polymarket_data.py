@@ -5,28 +5,31 @@ from __future__ import annotations
 import random
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 import streamlit as st
 
+# Fed statements are released ~2:00 PM US Eastern (ET observing EST/EDT).
+_FOMC_ET = ZoneInfo("America/New_York")
 
-# FOMC meeting schedule for 2026
+# FOMC meeting schedule for 2026 (statement release dates / meeting end dates per Fed calendar)
 FOMC_MEETINGS_2026 = [
-    datetime(2026, 1, 28, 14, 0),   # Jan 28-29
-    datetime(2026, 3, 18, 14, 0),   # Mar 17-18
-    datetime(2026, 4, 29, 14, 0),   # Apr 28-29 (past)
-    datetime(2026, 6, 17, 14, 0),   # Jun 16-17 (next)
-    datetime(2026, 7, 29, 14, 0),   # Jul 28-29
-    datetime(2026, 9, 16, 14, 0),   # Sep 15-16
-    datetime(2026, 10, 28, 14, 0),  # Oct 27-28
-    datetime(2026, 12, 9, 14, 0),   # Dec 8-9
+    datetime(2026, 1, 28, 14, 0, tzinfo=_FOMC_ET),
+    datetime(2026, 3, 18, 14, 0, tzinfo=_FOMC_ET),
+    datetime(2026, 4, 29, 14, 0, tzinfo=_FOMC_ET),
+    datetime(2026, 6, 17, 14, 0, tzinfo=_FOMC_ET),
+    datetime(2026, 7, 29, 14, 0, tzinfo=_FOMC_ET),
+    datetime(2026, 9, 16, 14, 0, tzinfo=_FOMC_ET),
+    datetime(2026, 10, 28, 14, 0, tzinfo=_FOMC_ET),
+    datetime(2026, 12, 9, 14, 0, tzinfo=_FOMC_ET),
 ]
 
 
 def get_next_fomc_meeting() -> datetime:
-    """Returns the next FOMC meeting datetime (2:00 PM ET)."""
-    now = datetime.now()
+    """Return the next FOMC statement datetime (2:00 PM America/New_York)."""
+    now = datetime.now(_FOMC_ET)
     for meeting in FOMC_MEETINGS_2026:
         if meeting > now:
             return meeting
